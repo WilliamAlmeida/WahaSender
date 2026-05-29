@@ -149,15 +149,15 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <Link to="/global-contacts?tab=blacklisted" className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4 hover:border-red-200 hover:ring-1 hover:ring-red-100 transition-colors cursor-pointer group">
-          <div className="p-3 bg-red-50 text-red-600 rounded-lg group-hover:bg-red-100 transition-colors">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="p-3 bg-red-50 text-red-600 rounded-lg">
             <ShieldAlert className="w-6 h-6" />
           </div>
           <div>
             <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Blacklisted</p>
             <h3 className="text-2xl font-black text-slate-800">{totalBlacklisted}</h3>
           </div>
-        </Link>
+        </div>
 
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
           <div className="p-3 bg-slate-50 text-slate-600 rounded-lg">
