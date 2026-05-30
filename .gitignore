@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Storage
+storage/database.sqlite
+storage/uploads/*
+!storage/uploads/.gitkeep

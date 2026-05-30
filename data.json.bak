@@ -1,0 +1,102 @@
+{
+  "settings": {
+    "wahaUrl": "https://waha.granaltocred.com.br",
+    "apiKey": "u8mgT1j96V4e57n79VIMq8CvYVbcCOln"
+  },
+  "contacts": [
+    {
+      "name": "William",
+      "phone": "5512982184879",
+      "_id": "1780065962731i9pfmqrsh",
+      "blacklisted": false
+    },
+    {
+      "name": "Hamilton",
+      "phone": "5543988250752",
+      "_id": "1780067230437hm12xuox6",
+      "blacklisted": false
+    }
+  ],
+  "groups": [
+    {
+      "id": "1780067188909",
+      "name": "Teste",
+      "contactIds": [
+        "1780065962731i9pfmqrsh",
+        "1780067230437hm12xuox6"
+      ]
+    },
+    {
+      "id": "1780067230437",
+      "name": "Lead Hamilton",
+      "contactIds": [
+        "1780067230437hm12xuox6"
+      ]
+    }
+  ],
+  "campaigns": [
+    {
+      "id": "1780067875454",
+      "name": "Teste",
+      "groupId": "1780067188909",
+      "groupName": "Teste",
+      "sessions": [
+        "limitenahora_ct_07",
+        "limitenahora_ct_06"
+      ],
+      "startTime": "2026-05-29T12:08",
+      "endTime": "",
+      "schedules": [
+        {
+          "dayOfWeek": 1,
+          "slots": [
+            {
+              "start": "08:00",
+              "end": "11:00"
+            },
+            {
+              "start": "13:00",
+              "end": "18:00"
+            }
+          ]
+        },
+        {
+          "dayOfWeek": 5,
+          "slots": [
+            {
+              "start": "08:00",
+              "end": "18:00"
+            }
+          ]
+        }
+      ],
+      "intervalMin": 60,
+      "intervalMax": 120,
+      "distributionMethod": "round_robin",
+      "templates": [
+        "{Oi|Olá|Eaí} {{name}}, tudo bem?"
+      ],
+      "status": "Draft",
+      "totalContacts": 2,
+      "sent": 0,
+      "failed": 0,
+      "pendingContacts": [
+        {
+          "name": "William",
+          "phone": "5512982184879",
+          "_id": "1780065962731i9pfmqrsh",
+          "blacklisted": false
+        },
+        {
+          "name": "Hamilton",
+          "phone": "5543988250752",
+          "_id": "1780067230437hm12xuox6",
+          "blacklisted": false
+        }
+      ],
+      "logs": [],
+      "createdAt": "2026-05-29T15:17:55.454Z",
+      "nextSendTime": "2026-05-29T12:08"
+    }
+  ]
+}

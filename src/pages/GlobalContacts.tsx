@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getContacts, updateContact, deleteContact, importGlobalContacts, getContactCampaigns } from '../lib/api';
-import { Users, Search, Trash2, Edit2, ShieldAlert, Shield, Upload, List, History, PlayCircle, XCircle, CheckCircle, UserPlus } from 'lucide-react';
+import { 
+  Users, Search, Trash2, Edit2, ShieldAlert, Shield, Upload, List, History, 
+  PlayCircle, XCircle, CheckCircle, UserPlus, Table, ArrowRight, Check 
+} from 'lucide-react';
 import { format } from 'date-fns';
 import { Modal } from '../components/Modal';
 import Papa from 'papaparse';
@@ -68,9 +71,16 @@ export default function GlobalContacts() {
   const [manualName, setManualName] = useState('');
   const [manualPhone, setManualPhone] = useState('');
 
+  // --- Estados do importador inteligente com mapeamento de colunas ---
+  const [showMapModal, setShowMapModal] = useState(false);
+  const [rawImportData, setRawImportData] = useState<any[]>([]);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [selectedNameCol, setSelectedNameCol] = useState<string>('');
+  const [selectedPhoneCol, setSelectedPhoneCol] = useState<string>('');
+
   const filterValidContacts = (data: any[]) => {
     return data.filter(c => {
-      const p = (c.phone || c.telefone || c.Phone || c.Telefone || '').toString().replace(/\D/g, '');
+      const p = (c.phone || '').toString().replace(/\D/g, '');
       return p.length >= 10 && p.length <= 15; // valid basic numeric length 
     });
   };
@@ -91,27 +101,30 @@ export default function GlobalContacts() {
     if (!file) return;
 
     setImporting(true);
-    const processData = async (data: any[]) => {
-      const validData = filterValidContacts(data);
-      if (validData.length === 0) {
-        alert("Nenhum contato válido encontrado (verifique se os telefones possuem DDD e apenas números).");
+
+    const processRawData = (data: any[]) => {
+      if (data.length === 0) {
+        alert("O arquivo selecionado está vazio.");
         setImporting(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
-      if (validData.length < data.length) {
-        alert(`${data.length - validData.length} contatos ignorados por formato de telefone inválido.`);
-      }
 
-      try {
-        await importGlobalContacts(validData);
-        await fetchContacts();
-      } catch (err) {
-        console.error('Failed to import contacts', err);
-      } finally {
-        setImporting(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
+      // Extrai os cabeçalhos das colunas
+      const fileHeaders = Object.keys(data[0]);
+      setHeaders(fileHeaders);
+      setRawImportData(data);
+
+      // Auto-detecção de colunas inteligente
+      const nameMatch = fileHeaders.find(h => /nome|name|client|cliente|usuario|user/i.test(h)) || '';
+      const phoneMatch = fileHeaders.find(h => /tel|phone|cel|whats|num|fone|contato/i.test(h)) || '';
+
+      setSelectedNameCol(nameMatch);
+      setSelectedPhoneCol(phoneMatch || fileHeaders[0] || ''); // fallback obrigatório
+
+      // Abre o modal de mapeamento
+      setShowMapModal(true);
+      setImporting(false);
     };
 
     const isCSV = file.name.endsWith('.csv');
@@ -120,21 +133,91 @@ export default function GlobalContacts() {
         header: true,
         skipEmptyLines: true,
         complete: (results) => {
-          processData(results.data);
+          processRawData(results.data);
         }
       });
     } else {
       const reader = new FileReader();
       reader.onload = (evt) => {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws);
-        processData(data);
+        try {
+          const bstr = evt.target?.result;
+          const wb = XLSX.read(bstr, { type: 'binary' });
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+          const data = XLSX.utils.sheet_to_json(ws);
+          processRawData(data);
+        } catch (err) {
+          alert('Erro ao ler a planilha Excel. Verifique o formato.');
+          setImporting(false);
+        }
       };
       reader.readAsBinaryString(file);
     }
+  };
+
+  const handleConfirmMapping = async () => {
+    if (!selectedPhoneCol) {
+      alert("A coluna de Telefone é obrigatória para importação!");
+      return;
+    }
+
+    setImporting(true);
+    setShowMapModal(false);
+
+    try {
+      // Mapeia os dados usando as colunas relacionadas pelo usuário
+      const mappedData = rawImportData.map((item: any) => {
+        return {
+          name: selectedNameCol ? (item[selectedNameCol] || '').toString().trim() : '',
+          phone: selectedPhoneCol ? (item[selectedPhoneCol] || '').toString().replace(/\D/g, '').trim() : ''
+        };
+      });
+
+      const validData = filterValidContacts(mappedData);
+
+      if (validData.length === 0) {
+        alert("Nenhum contato válido encontrado após o mapeamento (verifique se a coluna de telefone contém números com DDD).");
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        setImporting(false);
+        return;
+      }
+
+      if (validData.length < mappedData.length) {
+        alert(`${mappedData.length - validData.length} contatos ignorados por formato de telefone inválido.`);
+      }
+
+      await importGlobalContacts(validData);
+      await fetchContacts();
+
+    } catch (err) {
+      console.error('Erro ao importar contatos', err);
+      alert('Falha ao importar contatos.');
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setRawImportData([]);
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    // Layout de exemplo com dados fictícios elegantes
+    const templateData = [
+      { nome: 'Geraldo Alencar', telefone: '5511999999999' },
+      { nome: 'Ana Carolina', telefone: '5521988888888' },
+      { nome: 'Waha Sender Suporte', telefone: '5541977777777' }
+    ];
+
+    const worksheet = XLSX.utils.json_to_sheet(templateData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Modelo_Importacao');
+
+    // Estilo básico de tamanho de coluna
+    worksheet['!cols'] = [
+      { wch: 25 }, // Nome
+      { wch: 18 }  // Telefone
+    ];
+
+    XLSX.writeFile(workbook, 'layout_modelo_contatos.xlsx');
   };
 
   const handleViewHistory = async (contact: any) => {
@@ -175,7 +258,7 @@ export default function GlobalContacts() {
     if (activeTab === 'blacklisted' && !c.blacklisted) return false;
     
     return (c.name?.toLowerCase().includes(searchTerm.toLowerCase())) || 
-           ((c.phone || c.telefone)?.toString().includes(searchTerm));
+           ((c.phone)?.toString().includes(searchTerm));
   });
 
   const totalPages = Math.ceil(filteredContacts.length / itemsPerPage);
@@ -285,6 +368,16 @@ export default function GlobalContacts() {
               Excluir Selecionados ({selectedIds.size})
             </button>
           )}
+          
+          <button 
+            onClick={handleDownloadTemplate}
+            className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-sm font-bold border border-slate-200 transition-colors shadow-sm"
+            title="Baixar planilha de exemplo com layout correto de colunas"
+          >
+            <Table className="w-4 h-4 text-slate-500" />
+            Baixar Modelo
+          </button>
+
           <input
             type="file"
             accept=".csv, .xlsx, .xls"
@@ -298,14 +391,14 @@ export default function GlobalContacts() {
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm disabled:opacity-50"
           >
             <Upload className="w-4 h-4" />
-            {importing ? 'Importando...' : 'Importar Data'}
+            {importing ? 'Processando...' : 'Importar Planilha'}
           </button>
           <button 
             onClick={() => setShowAddModal(true)}
             className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-black text-white rounded-lg text-sm font-bold transition-colors shadow-sm"
           >
             <UserPlus className="w-4 h-4" />
-            Adicionar Manul
+            Adicionar Manual
           </button>
         </div>
       </div>
@@ -344,7 +437,7 @@ export default function GlobalContacts() {
             <div className="p-16 text-center">
               <Users className="w-12 h-12 mx-auto mb-4 text-slate-300" />
               <h3 className="text-lg font-bold text-slate-700 mb-1">Diretório Vazio</h3>
-              <p className="text-sm text-slate-500">Importe contatos através dos grupos para popular o diretório.</p>
+              <p className="text-sm text-slate-500">Importe contatos através da planilha ou adicione manualmente.</p>
             </div>
           ) : (
             <table className="min-w-full divide-y divide-slate-200">
@@ -372,7 +465,7 @@ export default function GlobalContacts() {
                       </div>
                     </td>
                     <td className="px-6 py-3 whitespace-nowrap">
-                      <span className={`text-sm font-mono px-2 py-0.5 rounded ${c.blacklisted ? 'bg-red-50 text-red-600 line-through' : 'bg-slate-50/50 text-slate-600'}`}>{formatPhone(c.phone || c.telefone)}</span>
+                      <span className={`text-sm font-mono px-2 py-0.5 rounded ${c.blacklisted ? 'bg-red-50 text-red-600 line-through' : 'bg-slate-50/50 text-slate-600'}`}>{formatPhone(c.phone)}</span>
                     </td>
                     <td className="px-6 py-3 whitespace-nowrap text-center">
                       <button 
@@ -399,7 +492,7 @@ export default function GlobalContacts() {
                         >
                           {c.blacklisted ? <ShieldAlert className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
                         </button>
-                        <button onClick={() => { setEditingId(c._id); setEditName(c.name || ''); setEditPhone(c.phone || c.telefone || ''); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors border border-transparent hover:border-indigo-200">
+                        <button onClick={() => { setEditingId(c._id); setEditName(c.name || ''); setEditPhone(c.phone || ''); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors border border-transparent hover:border-indigo-200">
                           <Edit2 className="w-4 h-4"/>
                         </button>
                         <button onClick={() => setContactToDelete(c._id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors border border-transparent hover:border-red-200">
@@ -410,7 +503,7 @@ export default function GlobalContacts() {
                   </tr>
                 ))}
                 {paginatedContacts.length === 0 && !loading && (
-                  <tr><td colSpan={4} className="p-8 text-center text-slate-400 font-medium">Nenhum contato encontrado na busca.</td></tr>
+                  <tr><td colSpan={5} className="p-8 text-center text-slate-400 font-medium">Nenhum contato encontrado na busca.</td></tr>
                 )}
               </tbody>
             </table>
@@ -442,6 +535,116 @@ export default function GlobalContacts() {
           </div>
         )}
       </div>
+
+      {/* --- MODAL DO IMPORTADOR DE PLANILHA COM MAPEAMENTO INTELIGENTE --- */}
+      <Modal 
+        isOpen={showMapModal} 
+        onClose={() => { setShowMapModal(false); setRawImportData([]); }} 
+        title="Mapeamento de Colunas da Planilha"
+        size="lg"
+      >
+        <div className="space-y-5">
+          <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl">
+            <div className="flex gap-3">
+              <Table className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-bold text-indigo-900">Relacione as colunas da sua planilha</h4>
+                <p className="text-xs text-indigo-700 mt-1">
+                  Encontramos <span className="font-bold">{rawImportData.length}</span> contatos no seu arquivo.
+                  Selecione quais colunas correspondem aos dados de cadastro do sistema.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] uppercase font-black text-slate-400 mb-1.5">Coluna de Telefone (Obrigatório)</label>
+              <select 
+                value={selectedPhoneCol} 
+                onChange={(e) => setSelectedPhoneCol(e.target.value)}
+                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              >
+                <option value="">-- Selecione a coluna do telefone --</option>
+                {headers.map(h => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1">Identifica o número do WhatsApp com DDD.</p>
+            </div>
+
+            <div>
+              <label className="block text-[10px] uppercase font-black text-slate-400 mb-1.5">Coluna de Nome (Opcional)</label>
+              <select 
+                value={selectedNameCol} 
+                onChange={(e) => setSelectedNameCol(e.target.value)}
+                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+              >
+                <option value="">-- Não importar Nome (Deixar Vazio) --</option>
+                {headers.map(h => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1">Coluna que contém o nome dos contatos.</p>
+            </div>
+          </div>
+
+          {/* Preview da Importação */}
+          {selectedPhoneCol && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+              <div className="bg-slate-100/80 px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+                <span className="text-[10px] uppercase font-bold text-slate-600 tracking-wider">Preview de Dados (Primeiras 3 linhas)</span>
+                <span className="text-[9px] uppercase font-black bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">Mapeado</span>
+              </div>
+              <div className="p-3 overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200 text-xs">
+                  <thead>
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-bold text-slate-500">Nome do Contato</th>
+                      <th className="px-3 py-1.5 text-left font-bold text-slate-500">WhatsApp</th>
+                      <th className="px-3 py-1.5 text-right font-bold text-slate-400">Linha</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {rawImportData.slice(0, 3).map((item, idx) => {
+                      const telRaw = item[selectedPhoneCol] || '';
+                      const telClean = telRaw.toString().replace(/\D/g, '');
+                      return (
+                        <tr key={idx}>
+                          <td className="px-3 py-1.5 font-semibold text-slate-700 max-w-[12rem] truncate">
+                            {selectedNameCol ? (item[selectedNameCol] || <span className="text-slate-400 italic">Vazio</span>) : <span className="text-slate-400 italic">Ignorado</span>}
+                          </td>
+                          <td className="px-3 py-1.5 font-mono text-slate-600">
+                            {telClean ? formatPhone(telClean) : <span className="text-red-500 italic">Sem número</span>}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-[10px] text-slate-400 font-bold">#{idx + 2}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+            <button 
+              onClick={() => { setShowMapModal(false); setRawImportData([]); }} 
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition-colors"
+            >
+              Cancelar
+            </button>
+            <button 
+              onClick={handleConfirmMapping}
+              disabled={!selectedPhoneCol}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs transition-all flex items-center gap-1.5 shadow-md shadow-indigo-100"
+            >
+              <Check className="w-4 h-4" />
+              Confirmar e Importar
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal isOpen={!!contactToDelete} onClose={() => setContactToDelete(null)} title="Excluir Contato Globalmente">
         <div className="mb-6 text-sm text-slate-600">Tem certeza que deseja excluir este contato? Ele será removido do sistema global e de TODOS os grupos que o utilizam.</div>
@@ -569,6 +772,7 @@ export default function GlobalContacts() {
           </button>
         </div>
       </Modal>
+
       <Modal isOpen={!!campaignsHistoryFor} onClose={() => setCampaignsHistoryFor(null)} title={`Histórico: ${campaignsHistoryFor?.name || campaignsHistoryFor?.phone || '...'}`}>
         <div className="mb-6 space-y-3 max-h-[60vh] overflow-y-auto pr-1">
           {loadingHistory ? (

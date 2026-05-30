@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { getGroup, updateGroup } from '../lib/api';
-import { ArrowLeft, Search, Trash2, Edit2, Check, X, UserPlus } from 'lucide-react';
+import { getGroup, updateGroup, getContacts } from '../lib/api';
+import { ArrowLeft, Search, Trash2, Edit2, Check, X, UserPlus, UserCheck } from 'lucide-react';
 import { Modal } from '../components/Modal';
 
 const formatPhone = (phone: string) => {
@@ -40,6 +40,14 @@ export default function GroupContacts() {
   // Group name editing
   const [editingGroupName, setEditingGroupName] = useState(false);
   const [editGroupNameValue, setEditGroupNameValue] = useState('');
+
+  // Estados para seleção de contatos globais
+  const [globalContacts, setGlobalContacts] = useState<any[]>([]);
+  const [showSelectSavedModal, setShowSelectSavedModal] = useState(false);
+  const [savedSearchTerm, setSavedSearchTerm] = useState('');
+  const [selectedSavedIds, setSelectedSavedIds] = useState<Set<string>>(new Set());
+  const [savedCurrentPage, setSavedCurrentPage] = useState(1);
+  const savedItemsPerPage = 10;
 
   const handleSaveGroupName = async () => {
     if (!editGroupNameValue.trim() || editGroupNameValue.trim() === group.name) {
@@ -80,8 +88,18 @@ export default function GroupContacts() {
     setLoading(false);
   };
 
+  const fetchGlobalContacts = async () => {
+    try {
+      const data = await getContacts();
+      setGlobalContacts(data);
+    } catch (e) {
+      console.error('Erro ao buscar contatos globais', e);
+    }
+  };
+
   useEffect(() => {
     fetchGroup();
+    fetchGlobalContacts();
   }, [id]);
 
   if (loading) return <div className="p-8 text-slate-500">Carregando contatos...</div>;
@@ -132,6 +150,79 @@ export default function GroupContacts() {
     setManualPhone('');
     setShowAddModal(false);
     setAlertMsg('Contato adicionado com sucesso!');
+  };
+
+  // Lógica de seleção e filtragem dos contatos globais salvos
+  const isAlreadyInGroup = (globalContact: any) => {
+    const cleanGlobalPhone = (globalContact.phone || globalContact.telefone)?.toString().replace(/\D/g, '');
+    return group.contacts.some((c: any) => (c.phone || c.telefone)?.toString().replace(/\D/g, '') === cleanGlobalPhone);
+  };
+
+  const filteredGlobalContacts = globalContacts.filter((c: any) => 
+    (c.name?.toLowerCase().includes(savedSearchTerm.toLowerCase())) ||
+    ((c.phone || c.telefone)?.toString().includes(savedSearchTerm))
+  );
+
+  const savedTotalPages = Math.ceil(filteredGlobalContacts.length / savedItemsPerPage);
+  const paginatedGlobalContacts = filteredGlobalContacts.slice(
+    (savedCurrentPage - 1) * savedItemsPerPage,
+    savedCurrentPage * savedItemsPerPage
+  );
+
+  const handleToggleSelectSaved = (cid: string) => {
+    const c = globalContacts.find(gc => gc._id === cid);
+    if (c && isAlreadyInGroup(c)) return;
+
+    const newSet = new Set(selectedSavedIds);
+    if (newSet.has(cid)) {
+      newSet.delete(cid);
+    } else {
+      newSet.add(cid);
+    }
+    setSelectedSavedIds(newSet);
+  };
+
+  const handleToggleSelectAllSaved = () => {
+    const selectableContacts = filteredGlobalContacts.filter(c => !isAlreadyInGroup(c));
+    if (selectedSavedIds.size === selectableContacts.length) {
+      setSelectedSavedIds(new Set());
+    } else {
+      setSelectedSavedIds(new Set(selectableContacts.map((c: any) => c._id)));
+    }
+  };
+
+  const handleConfirmSelectSaved = async () => {
+    const selectedContacts = globalContacts.filter((c: any) => selectedSavedIds.has(c._id));
+    
+    const existingPhones = new Set(group.contacts.map((c: any) => (c.phone || c.telefone)?.toString().replace(/\D/g, '')));
+    const newContactsToAppend: any[] = [];
+
+    selectedContacts.forEach(sc => {
+      const phoneClean = (sc.phone || sc.telefone)?.toString().replace(/\D/g, '');
+      if (!existingPhones.has(phoneClean)) {
+        newContactsToAppend.push({
+          _id: Date.now().toString() + Math.random().toString(36).substr(2, 9), 
+          name: sc.name.trim(), 
+          phone: phoneClean 
+        });
+        existingPhones.add(phoneClean);
+      }
+    });
+
+    if (newContactsToAppend.length === 0) {
+      setShowSelectSavedModal(false);
+      setSelectedSavedIds(new Set());
+      return;
+    }
+
+    const updatedContacts = [...group.contacts, ...newContactsToAppend];
+    setGroup({ ...group, contacts: updatedContacts });
+    await updateGroup(id!, { contacts: updatedContacts });
+    
+    setShowSelectSavedModal(false);
+    setSelectedSavedIds(new Set());
+    setSavedSearchTerm('');
+    setAlertMsg(`${newContactsToAppend.length} contatos importados com sucesso!`);
   };
 
   const confirmDeleteContact = async () => {
@@ -224,13 +315,22 @@ export default function GroupContacts() {
             className="flex-1 bg-transparent border-none focus:ring-0 text-sm py-2"
           />
         </div>
-        <button 
-          onClick={() => { setManualName(''); setManualPhone(''); setShowAddModal(true); }}
-          className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-black transition-colors min-w-max shadow-sm"
-        >
-          <UserPlus className="w-4 h-4" />
-          Add Contato
-        </button>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => { fetchGlobalContacts(); setShowSelectSavedModal(true); }}
+            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg border border-indigo-200 transition-colors min-w-max shadow-sm"
+          >
+            <UserCheck className="w-4 h-4" />
+            Importar Contatos Salvos
+          </button>
+          <button 
+            onClick={() => { setManualName(''); setManualPhone(''); setShowAddModal(true); }}
+            className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-black transition-colors min-w-max shadow-sm"
+          >
+            <UserPlus className="w-4 h-4" />
+            Add Contato
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 flex flex-col min-h-0">
@@ -402,6 +502,124 @@ export default function GroupContacts() {
           <button onClick={handleSaveEdit} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition-colors">
             Salvar
           </button>
+        </div>
+      </Modal>
+
+      <Modal 
+        isOpen={showSelectSavedModal} 
+        onClose={() => { setShowSelectSavedModal(false); setSelectedSavedIds(new Set()); }} 
+        title="Selecionar dos Contatos Salvos"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="flex bg-slate-50 p-2 rounded-lg border border-slate-200">
+            <Search className="w-4 h-4 text-slate-400 mx-2 self-center" />
+            <input 
+              type="text" 
+              placeholder="Buscar por nome ou telefone..." 
+              value={savedSearchTerm}
+              onChange={e => { setSavedSearchTerm(e.target.value); setSavedCurrentPage(1); }}
+              className="flex-1 bg-transparent border-none focus:ring-0 text-xs py-1"
+            />
+          </div>
+
+          <div className="max-h-[300px] overflow-y-auto border border-slate-100 rounded-lg">
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50 sticky top-0 z-10">
+                <tr>
+                  <th className="px-4 py-2 text-left w-10">
+                    <input 
+                      type="checkbox" 
+                      checked={filteredGlobalContacts.filter(c => !isAlreadyInGroup(c)).length > 0 && selectedSavedIds.size === filteredGlobalContacts.filter(c => !isAlreadyInGroup(c)).length}
+                      onChange={handleToggleSelectAllSaved}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" 
+                    />
+                  </th>
+                  <th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-wider">Nome</th>
+                  <th className="px-4 py-2 text-left text-[9px] font-black text-slate-400 uppercase tracking-wider">Telefone</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-slate-100">
+                {paginatedGlobalContacts.map((c: any) => {
+                  const inGroup = isAlreadyInGroup(c);
+                  return (
+                    <tr 
+                      key={c._id} 
+                      onClick={() => !inGroup && handleToggleSelectSaved(c._id)}
+                      className={`transition-colors ${inGroup ? 'bg-slate-50/70 cursor-not-allowed opacity-60' : 'hover:bg-slate-50/50 cursor-pointer'} ${selectedSavedIds.has(c._id) ? 'bg-indigo-50/30' : ''}`}
+                    >
+                      <td className="px-4 py-2 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        <input 
+                          type="checkbox" 
+                          disabled={inGroup}
+                          checked={selectedSavedIds.has(c._id)} 
+                          onChange={() => handleToggleSelectSaved(c._id)}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50 disabled:bg-slate-100" 
+                        />
+                      </td>
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold ${c.blacklisted ? 'text-red-700 line-through' : 'text-slate-800'}`}>{c.name || '-'}</span>
+                          {c.blacklisted && <span className="text-[8px] uppercase font-bold bg-red-100 text-red-700 px-1 py-0.5 rounded">Blacklist</span>}
+                          {inGroup && <span className="text-[8px] uppercase font-bold bg-slate-200 text-slate-600 px-1 py-0.5 rounded">Já no Grupo</span>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 whitespace-nowrap">
+                        <span className="text-xs font-mono text-slate-600">{c.phone || c.telefone}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredGlobalContacts.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="p-6 text-center text-xs text-slate-400 font-medium">Nenhum contato encontrado.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Paginação do Modal */}
+          {savedTotalPages > 1 && (
+            <div className="flex items-center justify-between pt-2 shrink-0">
+              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                Pág. {savedCurrentPage} de {savedTotalPages}
+              </span>
+              <div className="flex gap-1">
+                <button 
+                  disabled={savedCurrentPage === 1} 
+                  onClick={() => setSavedCurrentPage(prev => prev - 1)}
+                  className="px-2 py-1 text-[10px] font-bold uppercase bg-white border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors shadow-sm"
+                >
+                  Anterior
+                </button>
+                <button 
+                  disabled={savedCurrentPage === savedTotalPages} 
+                  onClick={() => setSavedCurrentPage(prev => prev + 1)}
+                  className="px-2 py-1 text-[10px] font-bold uppercase bg-white border border-slate-200 rounded text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition-colors shadow-sm"
+                >
+                  Próxima
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button 
+              onClick={() => { setShowSelectSavedModal(false); setSelectedSavedIds(new Set()); }} 
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs transition-colors"
+            >
+              Cancelar
+            </button>
+            <button 
+              onClick={handleConfirmSelectSaved} 
+              disabled={selectedSavedIds.size === 0}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs transition-colors flex items-center gap-1"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              Importar Selecionados ({selectedSavedIds.size})
+            </button>
+          </div>
         </div>
       </Modal>
     </div>
