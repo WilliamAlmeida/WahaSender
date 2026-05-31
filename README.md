@@ -1,97 +1,169 @@
-<div align="center">
-  <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# WahaSender
 
-# 🚀 WahaSender - Disparador de Mensagens WhatsApp
+Plataforma multi-usuário para disparo humanizado de mensagens WhatsApp via [WAHA](https://waha.devlike.pro/), com fila distribuída, controle de janelas de envio, spintax e segregação total de dados por usuário.
 
-WahaSender é um painel completo para envio de mensagens em massa via WhatsApp utilizando a API do WAHA, com suporte a rodízio de sessões, simulação de digitação humana (typing status), intervalos inteligentes, janelas de horários e diretório unificado de contatos.
+> **Migração v1 → v2**: a versão antiga era monousuário com fila in-memory. A nova usa BullMQ + Redis, autenticação JWT e separação web/worker. Ao iniciar pela primeira vez, todos os dados existentes em `data.json` são migrados automaticamente para o banco e associados a um usuário legado (`legacy@local`, login desabilitado até reset de senha).
 
----
+## Sumário
 
-## ⚙️ Arquitetura e Recursos Recentes
+- [Arquitetura](#arquitetura)
+- [Stack](#stack)
+- [Início rápido (Docker)](#início-rápido-docker)
+- [Início rápido (local)](#início-rápido-local)
+- [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Fluxo de primeiro login](#fluxo-de-primeiro-login)
+- [Webhook WAHA](#webhook-waha)
+- [Testes](#testes)
+- [Estrutura](#estrutura)
+- [Segurança](#notas-de-segurança-owasp)
 
-### 🗄️ 1. Persistência Relacional (SQLite & PostgreSQL)
-O sistema migrou do armazenamento em arquivo JSON simples para banco de dados relacional robusto controlado via **Knex.js** (com migrations baseadas em código):
-* **SQLite (Padrão local)**: Armazenado fisicamente na pasta de persistência `./storage/database.sqlite`.
-* **PostgreSQL**: Pronto para produção bastando alterar as chaves do banco de dados no arquivo `.env`.
-* **Migração Automática de Dados**: Ao iniciar pela primeira vez com a nova arquitetura, o servidor detecta o arquivo `data.json` antigo e importa de forma totalmente transparente os seus contatos, grupos, campanhas, logs e fila transacional para a base relacional, gerando em seguida um backup (`data.json.bak`).
+## Arquitetura
 
-### 📦 2. Storage Provider Flexível (Upload de Mídias)
-Uma camada de abstração de Storage foi adicionada ao backend para uploads de arquivos/mídias das suas campanhas:
-* **Driver `local` (Filesystem)**: Salva as mídias em `./storage/uploads/` e as disponibiliza estaticamente via Express na rota `/uploads/`.
-* **Driver `s3` (AWS S3 ou compatíveis)**: Envia diretamente para o **AWS S3**, **MinIO**, **Cloudflare R2** ou similares configurados via variáveis de ambiente.
+```
+┌──────────────┐     ┌────────────┐     ┌────────────┐
+│  Frontend    │ ──► │   API      │ ──► │ Postgres / │
+│  (React/Vite)│     │ (Express)  │     │  SQLite    │
+└──────────────┘     └─────┬──────┘     └────────────┘
+                           │
+                           ▼
+                     ┌──────────┐         ┌──────────┐
+                     │  Redis   │ ◄─────► │  Worker  │ ──► WAHA
+                     │ (BullMQ) │         │  (Node)  │
+                     └──────────┘         └──────────┘
+```
 
-### 🐳 3. Preparado para Docker & Volumes
-Todo dado persistente do projeto (banco SQLite e uploads locais) está centralizado no diretório raiz `/storage`.
-* Para rodar em containers Docker, você só precisa criar um volume apontando para a pasta física `/storage` para reter todas as informações e uploads de forma definitiva!
-  ```bash
-  # Exemplo de mapeamento de volume
-  -v ./storage:/app/storage
-  ```
+- **web** (`server.ts`): API REST + serve o frontend; nunca dispara mensagens diretamente.
+- **worker** (`worker.ts`): consome a fila `campaign-messages`, chama WAHA, atualiza status e re-enfileira o próximo contato com delay humanizado. Roda também a fila `campaign-scheduler` que ativa campanhas agendadas e recupera campanhas órfãs.
+- **Redis**: backend da fila (BullMQ).
+- **Postgres** (produção) ou **SQLite** (dev/teste): metadados, contatos, campanhas, logs.
 
-### 📋 4. Importador Inteligente de Contatos
-* **Download de Modelo**: Botão nas páginas de contatos e grupos para baixar um layout de exemplo em planilha XLSX com a estrutura correta.
-* **Modal de Mapeamento de Colunas**: Ao carregar um arquivo Excel ou CSV no Diretório de Contatos, você pode associar visualmente quais colunas do seu arquivo correspondem a **Nome** e **Telefone** (com suporte a auto-detecção inteligente e preview em tempo real das primeiras 3 linhas antes de confirmar).
+Cada usuário só enxerga e manipula os próprios dados. Uploads ficam em `storage/uploads/{userId}/...` ou em S3 (`STORAGE_TYPE=s3`).
 
----
+## Stack
 
-## 🛠️ Como Rodar Localmente
+| Camada     | Tecnologia                                          |
+| ---------- | --------------------------------------------------- |
+| Frontend   | React 19, Vite, Tailwind 4, React Router 7          |
+| Backend    | Node 20, Express, TypeScript, Knex                  |
+| Fila       | BullMQ + Redis 7                                    |
+| Banco      | Postgres 16 (prod) / SQLite (dev)                   |
+| Auth       | JWT em cookie httpOnly (+ Bearer opcional), bcrypt  |
+| Logs       | pino + pino-http                                    |
+| Validação  | zod                                                 |
+| Storage    | Local FS ou S3 (`@aws-sdk/lib-storage`)             |
+| Testes     | Vitest                                              |
+| Container  | Docker multi-stage, docker-compose                  |
 
-### Pré-requisitos
-* **Node.js** (v18 ou superior recomendado)
-* **WAHA API** instalada e rodando (ou similar compatível)
+## Início rápido (Docker)
 
-### Passo a Passo
+Pré-requisitos: Docker + Docker Compose.
 
-1. **Instalar Dependências**:
-   ```bash
-   npm install
-   ```
+```bash
+cp .env.example .env
+# Edite .env e defina pelo menos JWT_SECRET (>= 16 chars, sem prefixo "change-me" em produção)
+docker compose up -d --build
+```
 
-2. **Configurar as Variáveis de Ambiente**:
-   Crie um arquivo `.env` na raiz do projeto (use como base as variáveis criadas automaticamente ou o exemplo a seguir):
-   ```env
-   # Gemini AI API Key
-   GEMINI_API_KEY="SUA_API_KEY_AQUI"
-   
-   # URL base do Painel
-   APP_URL="http://localhost:3000"
-   
-   # --- BANCO DE DADOS ---
-   # DB_CLIENT: 'sqlite3' ou 'pg' (PostgreSQL)
-   DB_CLIENT="sqlite3"
-   
-   # Configurações para PostgreSQL (caso mude o DB_CLIENT para 'pg')
-   DB_HOST="localhost"
-   DB_PORT=5432
-   DB_USER="postgres"
-   DB_PASSWORD="password"
-   DB_DATABASE="waha_sender"
-   
-   # --- STORAGE ---
-   # STORAGE_TYPE: 'local' ou 's3'
-   STORAGE_TYPE="local"
-   
-   # Configurações para S3 (caso mude o STORAGE_TYPE para 's3')
-   AWS_ACCESS_KEY_ID="seu_access_key"
-   AWS_SECRET_ACCESS_KEY="sua_secret_key"
-   AWS_REGION="us-east-1"
-   AWS_BUCKET="nome-do-seu-bucket"
-   AWS_ENDPOINT="" # Opcional (para MinIO, Cloudflare R2, etc.)
-   ```
+Acesse `http://localhost:3000` e crie o primeiro administrador.
 
-3. **Iniciar em Ambiente de Desenvolvimento**:
-   ```bash
-   npm run dev
-   ```
-   *As migrations do banco relacional rodarão de forma totalmente automática no boot do Express!*
+```bash
+docker compose logs -f app worker
+```
 
-4. **Gerar Build de Produção**:
-   ```bash
-   npm run build
-   ```
+## Início rápido (local)
 
-5. **Iniciar em Produção**:
-   ```bash
-   npm run start
-   ```
+Pré-requisitos: Node 20+, Redis na porta 6379 (`docker run -p 6379:6379 redis:7-alpine`).
+
+```bash
+npm install
+cp .env.example .env  # ajuste JWT_SECRET
+npm run dev           # web (porta 3000)
+npm run dev:worker    # em outro terminal
+```
+
+> Sem Redis o worker não inicia, mas a API ainda sobe — útil para desenvolver UI.
+
+Build de produção:
+
+```bash
+npm run build
+npm start            # web
+npm run start:worker # worker
+```
+
+## Variáveis de ambiente
+
+Veja `.env.example` para a lista completa. As mais importantes:
+
+| Variável             | Descrição                                                 | Default                 |
+| -------------------- | --------------------------------------------------------- | ----------------------- |
+| `NODE_ENV`           | `development` \| `production` \| `test`                   | `development`           |
+| `PORT`               | Porta HTTP da API                                         | `3000`                  |
+| `APP_URL`            | URL pública (usada pelo CORS)                             | `http://localhost:3000` |
+| `DB_CLIENT`          | `sqlite3` ou `pg`                                         | `sqlite3`               |
+| `REDIS_HOST/PORT`    | Conexão Redis                                             | `localhost:6379`        |
+| `WORKER_CONCURRENCY` | Jobs simultâneos no worker                                | `10`                    |
+| `JWT_SECRET`         | Segredo do JWT — **obrigatório em produção**              | —                       |
+| `COOKIE_SECURE`      | `true` se servido sob HTTPS                               | `false`                 |
+| `STORAGE_TYPE`       | `local` ou `s3`                                           | `local`                 |
+| `UPLOAD_MAX_BYTES`   | Tamanho máximo por upload                                 | `26214400` (25 MB)      |
+| `WAHA_WEBHOOK_SECRET`| Header `X-Webhook-Secret` exigido em `/api/waha/webhook`  | —                       |
+
+## Fluxo de primeiro login
+
+1. Sobe a aplicação (web + worker + redis + postgres).
+2. Acessa `http://localhost:3000`. O frontend chama `GET /api/auth/needs-bootstrap` — sem usuários, mostra "Criar primeiro administrador".
+3. Após criado o admin, novos cadastros públicos são bloqueados (`POST /api/auth/register` passa a retornar 403). Para criar mais usuários, insira diretamente no banco ou exponha um endpoint admin.
+
+## Webhook WAHA
+
+Aponte o webhook da sua instância WAHA para:
+
+```
+POST {APP_URL}/api/waha/webhook
+Header: X-Webhook-Secret: <WAHA_WEBHOOK_SECRET>
+Body: payload padrão do WAHA (event=message.ack, payload.id, payload.ack)
+```
+
+O servidor atualiza `message_status` (`pending → sent → delivered → read`) e ajusta `failedCount` da campanha quando o status final for `failed`.
+
+## Testes
+
+```bash
+npm test            # roda uma vez
+npm run test:watch  # modo watch
+```
+
+Cobertura atual: spintax, placeholders, normalização de telefone, janelas de envio.
+
+## Estrutura
+
+```
+server/
+  config.ts          # parse/validação zod do .env
+  logger.ts          # pino
+  db.ts              # knex
+  migrations.ts      # schema idempotente + backfill legado
+  storage.ts         # provider Local / S3 + validação de upload
+  auth/              # service, middleware, routes
+  routes/api.ts      # API REST (todas as rotas isoladas por req.user.id)
+  queue/             # BullMQ connection + helpers
+  lib/messaging.ts   # placeholders, spintax, JID
+  lib/schedule.ts    # janelas + delay humanizado
+src/                 # frontend React
+worker.ts            # processador BullMQ
+server.ts            # composition root da API
+tests/               # vitest
+```
+
+## Notas de segurança (OWASP)
+
+- **A01/A07** — JWT em cookie httpOnly + `SameSite=lax`; bcrypt cost 12; rate-limit em `/api/auth/*` (10 req/min) e geral 300 req/min/IP.
+- **A05** — `helmet()` aplicado (CSP desligado para o SPA inline). CORS restrito a `APP_URL`.
+- **A03** — Validação zod em todas as rotas mutadoras; queries via Knex (parametrizadas).
+- **A04** — Upload validado por **extensão E magic-bytes** (`file-type`), limite configurável, isolamento por usuário no FS/S3.
+- **A08/A09** — Logs estruturados (pino-http). Webhook protegido por segredo compartilhado.
+
+## Licença
+
+MIT.

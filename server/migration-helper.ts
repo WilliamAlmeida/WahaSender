@@ -1,122 +1,98 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import db from './db';
+import { ensureLegacyUserId } from './migrations';
+import { logger } from './logger';
 
 export async function migrateLegacyJsonData(): Promise<void> {
   const legacyJsonPath = path.resolve(process.cwd(), 'data.json');
 
   if (!fs.existsSync(legacyJsonPath)) {
-    console.log('[Migration Helper] Nenhum arquivo legacy "data.json" encontrado. Pulando migração de JSON.');
+    logger.debug('[Migration Helper] No legacy data.json found. Skipping.');
     return;
   }
 
   try {
-    // Verifica se já existem dados no novo banco para evitar sobreposição/duplicidade
     const contactsCountResult = await db('contacts').count({ count: '*' }).first();
-    const contactsCount = Number(contactsCountResult?.count || 0);
-
-    if (contactsCount > 0) {
-      console.log('[Migration Helper] Banco de dados já possui contatos. O "data.json" antigo não será reimportado.');
+    if (Number(contactsCountResult?.count || 0) > 0) {
+      logger.info('[Migration Helper] Database already has contacts; legacy data.json will not be re-imported.');
       return;
     }
 
-    console.log('[Migration Helper] Arquivo "data.json" antigo detectado e banco de dados novo está vazio. Iniciando seeder automático...');
-    const fileContent = fs.readFileSync(legacyJsonPath, 'utf-8');
-    const legacyData = JSON.parse(fileContent);
+    logger.info('[Migration Helper] Importing legacy data.json into relational store...');
+    const legacyData = JSON.parse(fs.readFileSync(legacyJsonPath, 'utf-8'));
+    const userId = await ensureLegacyUserId();
 
-    // 1. Migrar configurações (settings)
+    // 1) Settings
     if (legacyData.settings) {
-      const settingsCount = await db('settings').count({ count: '*' }).first();
-      if (Number(settingsCount?.count || 0) === 0) {
+      const cnt = await db('settings').count({ c: '*' }).first();
+      if (Number(cnt?.c || 0) === 0) {
         await db('settings').insert({
           id: 1,
           wahaUrl: legacyData.settings.wahaUrl || '',
           apiKey: legacyData.settings.apiKey || '',
+          userId,
         });
-        console.log('[Migration Helper] Configurações importadas.');
       }
     }
 
-    // 2. Migrar contatos (contacts)
+    // 2) Contacts
     const contactsMap = new Map<string, any>();
-    if (legacyData.contacts && Array.isArray(legacyData.contacts)) {
-      const contactsToInsert = legacyData.contacts.map((c: any) => {
-        const id = c._id || c.id || Date.now().toString() + Math.random().toString(36).substr(2, 9);
-        const name = c.name || c.nome || null;
-        const phone = (c.phone || c.telefone || '').toString().trim();
-        const blacklisted = !!c.blacklisted;
-        
-        contactsMap.set(id, { id, name, phone, blacklisted });
-        return {
-          id,
-          name,
-          phone,
-          blacklisted
-        };
-      });
-
-      // Filtra contatos duplicados por telefone antes de inserir no banco relacional (onde "phone" é chave única)
-      const uniqueContacts: any[] = [];
+    if (Array.isArray(legacyData.contacts)) {
       const seenPhones = new Set<string>();
-      
-      for (const c of contactsToInsert) {
-        if (c.phone && !seenPhones.has(c.phone)) {
-          seenPhones.add(c.phone);
-          uniqueContacts.push(c);
-        }
+      const toInsert: any[] = [];
+      for (const c of legacyData.contacts) {
+        const id = c._id || c.id || crypto.randomUUID();
+        const phone = (c.phone || c.telefone || '').toString().trim();
+        if (!phone || seenPhones.has(phone)) continue;
+        seenPhones.add(phone);
+        const row = {
+          id,
+          name: c.name || c.nome || null,
+          phone,
+          blacklisted: !!c.blacklisted,
+          userId,
+        };
+        contactsMap.set(id, row);
+        toInsert.push(row);
       }
-
-      if (uniqueContacts.length > 0) {
-        // Insere em lotes (chunks) de 100 para evitar limites de variáveis no SQLite/Postgres
-        await db.batchInsert('contacts', uniqueContacts, 100);
-        console.log(`[Migration Helper] ${uniqueContacts.length} contatos globais importados.`);
+      if (toInsert.length > 0) {
+        await db.batchInsert('contacts', toInsert, 100);
+        logger.info({ count: toInsert.length }, '[Migration Helper] Imported contacts');
       }
     }
 
-    // 3. Migrar grupos (groups) e relacionamento group_contacts
-    if (legacyData.groups && Array.isArray(legacyData.groups)) {
+    // 3) Groups + relations
+    if (Array.isArray(legacyData.groups)) {
       for (const g of legacyData.groups) {
-        const groupId = g.id || Date.now().toString() + Math.random().toString(36).substr(2, 9);
-        const groupName = g.name || 'Sem Nome';
-
+        const groupId = g.id || crypto.randomUUID();
         await db('groups').insert({
           id: groupId,
-          name: groupName
+          name: g.name || 'Sem Nome',
+          userId,
         });
 
-        const contactIds = g.contactIds || [];
-        const groupContactsToInsert = contactIds
-          .map((cid: string) => {
-            // Verifica se o contato de fato existe no banco
-            const exists = contactsMap.has(cid);
-            if (exists) {
-              return { groupId, contactId: cid };
-            }
-            return null;
-          })
-          .filter(Boolean);
-
-        if (groupContactsToInsert.length > 0) {
-          await db.batchInsert('group_contacts', groupContactsToInsert, 100);
+        const rels = (g.contactIds || [])
+          .filter((cid: string) => contactsMap.has(cid))
+          .map((cid: string) => ({ groupId, contactId: cid }));
+        if (rels.length > 0) {
+          await db.batchInsert('group_contacts', rels, 100);
         }
       }
-      console.log(`[Migration Helper] ${legacyData.groups.length} grupos importados.`);
+      logger.info({ count: legacyData.groups.length }, '[Migration Helper] Imported groups');
     }
 
-    // 4. Migrar campanhas (campaigns) e históricos de logs/fila
-    if (legacyData.campaigns && Array.isArray(legacyData.campaigns)) {
-      let campaignsCount = 0;
+    // 4) Campaigns + queue + logs
+    if (Array.isArray(legacyData.campaigns)) {
       for (const c of legacyData.campaigns) {
-        const campId = c.id || Date.now().toString();
-        
-        // Verifica se o grupo associado existe no banco
-        const groupExists = c.groupId ? await db('groups').where({ id: c.groupId }).first() : false;
-        const dbGroupId = groupExists ? c.groupId : null;
+        const campId = c.id || crypto.randomUUID();
+        const groupRow = c.groupId ? await db('groups').where({ id: c.groupId }).first() : null;
 
         await db('campaigns').insert({
           id: campId,
           name: c.name || 'Campanha',
-          groupId: dbGroupId,
+          groupId: groupRow ? c.groupId : null,
           groupName: c.groupName || null,
           sessions: JSON.stringify(c.sessions || []),
           startTime: c.startTime ? new Date(c.startTime) : new Date(),
@@ -131,58 +107,50 @@ export async function migrateLegacyJsonData(): Promise<void> {
           sent: c.sent || 0,
           failed: c.failed || 0,
           nextSendTime: c.nextSendTime ? new Date(c.nextSendTime) : null,
-          createdAt: c.createdAt ? new Date(c.createdAt) : new Date()
+          createdAt: c.createdAt ? new Date(c.createdAt) : new Date(),
+          userId,
         });
 
-        // Contatos pendentes na fila da campanha
-        if (c.pendingContacts && Array.isArray(c.pendingContacts)) {
-          const pendingToInsert = c.pendingContacts
-            .map((pc: any) => {
+        if (Array.isArray(c.pendingContacts)) {
+          const pendings = c.pendingContacts
+            .map((pc: any, idx: number) => {
               const cid = pc._id || pc.id;
               if (cid && contactsMap.has(cid)) {
                 return {
                   campaignId: campId,
                   contactId: cid,
-                  paused: !!pc._paused
+                  paused: !!pc._paused,
+                  order: idx,
                 };
               }
               return null;
             })
             .filter(Boolean);
-
-          if (pendingToInsert.length > 0) {
-            await db.batchInsert('campaign_pending_contacts', pendingToInsert, 100);
+          if (pendings.length > 0) {
+            await db.batchInsert('campaign_pending_contacts', pendings, 100);
           }
         }
 
-        // Histórico de logs da campanha
-        if (c.logs && Array.isArray(c.logs)) {
-          const logsToInsert = c.logs.map((logString: string) => {
-            return {
-              campaignId: campId,
-              log: logString,
-              createdAt: new Date()
-            };
-          });
-
-          if (logsToInsert.length > 0) {
-            await db.batchInsert('campaign_logs', logsToInsert, 100);
+        if (Array.isArray(c.logs)) {
+          const logs = c.logs.map((logString: string) => ({
+            campaignId: campId,
+            log: logString,
+            createdAt: new Date(),
+          }));
+          if (logs.length > 0) {
+            await db.batchInsert('campaign_logs', logs, 100);
           }
         }
-
-        campaignsCount++;
       }
-      console.log(`[Migration Helper] ${campaignsCount} campanhas importadas com seus respectivos logs e filas.`);
+      logger.info({ count: legacyData.campaigns.length }, '[Migration Helper] Imported campaigns');
     }
 
-    // 5. Renomear o arquivo antigo para backup
-    const backupJsonPath = path.resolve(process.cwd(), 'data.json.bak');
-    fs.renameSync(legacyJsonPath, backupJsonPath);
-    console.log('[Migration Helper] Migração de dados legados concluída com sucesso!');
-    console.log(`[Migration Helper] O arquivo antigo "data.json" foi renomeado para "data.json.bak" por segurança.`);
-
+    const backupPath = path.resolve(process.cwd(), 'data.json.bak');
+    fs.renameSync(legacyJsonPath, backupPath);
+    logger.info({ backupPath }, '[Migration Helper] Legacy import complete; data.json renamed to .bak');
   } catch (err: any) {
-    console.error('[Migration Helper] Erro catastrófico ao migrar dados legados de JSON:', err.message);
+    logger.error({ err: err.message }, '[Migration Helper] Failed to migrate legacy data.json');
   }
 }
+
 export default migrateLegacyJsonData;

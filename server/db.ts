@@ -1,42 +1,47 @@
 import knex from 'knex';
 import path from 'path';
-import dotenv from 'dotenv';
+import { config } from './config';
+import { logger } from './logger';
 
-// Garante o carregamento das variáveis de ambiente na raiz
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+const isSqlite = config.DB_CLIENT === 'sqlite3';
 
-const client = process.env.DB_CLIENT || 'sqlite3';
-
-const connectionConfig: any = client === 'sqlite3' 
+const connectionConfig: any = isSqlite
   ? {
-      filename: path.resolve(process.cwd(), 'storage', 'database.sqlite')
+      filename: path.resolve(process.cwd(), 'storage', 'database.sqlite'),
     }
   : {
-      host: process.env.DB_HOST || 'localhost',
-      port: Number(process.env.DB_PORT) || 5432,
-      user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD || 'password',
-      database: process.env.DB_DATABASE || 'waha_sender',
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
+      host: config.DB_HOST,
+      port: config.DB_PORT,
+      user: config.DB_USER,
+      password: config.DB_PASSWORD,
+      database: config.DB_DATABASE,
+      ssl: config.DB_SSL ? { rejectUnauthorized: false } : false,
     };
 
-const config = {
-  client: client === 'sqlite3' ? 'sqlite3' : 'pg',
+const knexConfig = {
+  client: isSqlite ? 'sqlite3' : 'pg',
   connection: connectionConfig,
-  useNullAsDefault: client === 'sqlite3',
-  pool: client === 'sqlite3' 
+  useNullAsDefault: isSqlite,
+  pool: isSqlite
     ? {
         afterCreate: (conn: any, cb: any) => {
-          // Habilita chaves estrangeiras no SQLite
           conn.run('PRAGMA foreign_keys = ON', cb);
-        }
+        },
       }
     : {
-        min: 2,
-        max: 10
-      }
+        min: config.DB_POOL_MIN,
+        max: config.DB_POOL_MAX,
+      },
 };
 
-export const db = knex(config);
+logger.info(
+  { client: knexConfig.client, host: isSqlite ? connectionConfig.filename : connectionConfig.host },
+  '[DB] Initializing database connection',
+);
+
+export const db = knex(knexConfig);
+
+export const isPostgres = !isSqlite;
+export const isSqliteDb = isSqlite;
 
 export default db;

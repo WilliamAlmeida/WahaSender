@@ -7,7 +7,12 @@ coverage/
 .env*
 !.env.example
 
+# Legacy data
+data.json
+data.json.bak
+
 # Storage
 storage/database.sqlite
+storage/database.sqlite-journal
 storage/uploads/*
 !storage/uploads/.gitkeep

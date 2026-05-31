@@ -1,129 +1,196 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import dotenv from 'dotenv';
+import { Readable } from 'stream';
+import { S3Client } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
+import { fileTypeFromBuffer } from 'file-type';
+import { config } from './config';
+import { logger } from './logger';
 
-dotenv.config();
+export interface UploadInput {
+  buffer: Buffer;
+  originalname: string;
+  mimetype: string;
+  size: number;
+}
 
 export interface UploadResult {
   filename: string;
   url: string;
+  mimetype: string;
+  size: number;
 }
 
-export interface IStorageProvider {
-  uploadFile(file: Express.Multer.File): Promise<UploadResult>;
+const ALLOWED_MIME = new Set<string>([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'video/mp4',
+  'video/webm',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'audio/x-m4a',
+  'audio/mp4',
+  'application/pdf',
+]);
+
+const ALLOWED_EXT = new Set<string>([
+  '.jpg', '.jpeg', '.png', '.gif', '.webp',
+  '.mp4', '.webm',
+  '.mp3', '.ogg', '.wav', '.m4a',
+  '.pdf',
+]);
+
+export class UploadValidationError extends Error {
+  status = 400;
 }
 
-// 1. Provedor de Storage Local (Filesystem)
-class LocalStorageProvider implements IStorageProvider {
-  private uploadDir: string;
+export async function validateUpload(file: UploadInput): Promise<{ mime: string; ext: string }> {
+  if (!file?.buffer || file.size <= 0) {
+    throw new UploadValidationError('Empty file');
+  }
+  if (file.size > config.UPLOAD_MAX_BYTES) {
+    throw new UploadValidationError(`File exceeds maximum size of ${config.UPLOAD_MAX_BYTES} bytes`);
+  }
 
-  constructor() {
-    this.uploadDir = path.resolve(process.cwd(), 'storage', 'uploads');
-    if (!fs.existsSync(this.uploadDir)) {
-      fs.mkdirSync(this.uploadDir, { recursive: true });
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  if (!ALLOWED_EXT.has(ext)) {
+    throw new UploadValidationError(`File extension "${ext}" not allowed`);
+  }
+
+  const detected = await fileTypeFromBuffer(file.buffer);
+  const detectedMime = detected?.mime || file.mimetype;
+  if (!ALLOWED_MIME.has(detectedMime)) {
+    throw new UploadValidationError(`MIME type "${detectedMime}" not allowed`);
+  }
+  // Cross-check declared vs detected if both known
+  if (detected && file.mimetype && !file.mimetype.startsWith('application/octet-stream')) {
+    if (detected.mime !== file.mimetype) {
+      logger.warn(
+        { declared: file.mimetype, detected: detected.mime, name: file.originalname },
+        '[Upload] Declared MIME mismatched detected; using detected',
+      );
     }
   }
+  return { mime: detectedMime, ext };
+}
 
-  async uploadFile(file: Express.Multer.File): Promise<UploadResult> {
+interface IStorageProvider {
+  uploadFile(file: UploadInput, userId: string): Promise<UploadResult>;
+  /** For local provider only: returns a readable stream + meta if file is owned by user. */
+  serveLocal?(userId: string, filename: string): { stream: Readable; mimetype?: string } | null;
+}
+
+class LocalStorageProvider implements IStorageProvider {
+  private rootDir: string;
+
+  constructor() {
+    this.rootDir = path.resolve(process.cwd(), 'storage', 'uploads');
+    fs.mkdirSync(this.rootDir, { recursive: true });
+  }
+
+  private userDir(userId: string): string {
+    const dir = path.join(this.rootDir, userId);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  async uploadFile(file: UploadInput, userId: string): Promise<UploadResult> {
+    const { mime } = await validateUpload(file);
     const fileHash = crypto.randomBytes(8).toString('hex');
-    const cleanOriginalName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const uniqueFilename = `${Date.now()}-${fileHash}-${cleanOriginalName}`;
-    const destinationPath = path.join(this.uploadDir, uniqueFilename);
-
-    fs.writeFileSync(destinationPath, file.buffer);
-
-    // Retorna a URL relativa que será exposta como estática pelo express
-    const fileUrl = `/uploads/${uniqueFilename}`;
-
+    const clean = (file.originalname || 'file').replace(/[^a-zA-Z0-9.-]/g, '_').slice(-80);
+    const filename = `${Date.now()}-${fileHash}-${clean}`;
+    const dest = path.join(this.userDir(userId), filename);
+    fs.writeFileSync(dest, file.buffer);
     return {
-      filename: uniqueFilename,
-      url: fileUrl
+      filename,
+      url: `/api/uploads/${encodeURIComponent(filename)}`,
+      mimetype: mime,
+      size: file.size,
     };
+  }
+
+  serveLocal(userId: string, filename: string) {
+    // Prevent path traversal
+    const safe = path.basename(filename);
+    const full = path.join(this.userDir(userId), safe);
+    if (!fs.existsSync(full)) return null;
+    return { stream: fs.createReadStream(full) };
   }
 }
 
-// 2. Provedor de Storage AWS S3
 class S3StorageProvider implements IStorageProvider {
-  private s3Client: S3Client;
+  private s3: S3Client;
   private bucket: string;
   private region: string;
+  private endpoint?: string;
 
   constructor() {
-    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
-    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || '';
-    this.region = process.env.AWS_REGION || 'us-east-1';
-    this.bucket = process.env.AWS_BUCKET || '';
-    const endpoint = process.env.AWS_ENDPOINT || undefined;
+    this.region = config.AWS_REGION;
+    this.bucket = config.AWS_BUCKET || '';
+    this.endpoint = config.AWS_ENDPOINT;
+
+    if (!this.bucket) {
+      throw new Error('[Storage] STORAGE_TYPE=s3 but AWS_BUCKET is empty');
+    }
 
     const clientConfig: any = {
       region: this.region,
-      credentials: {
-        accessKeyId,
-        secretAccessKey
-      }
+      credentials: config.AWS_ACCESS_KEY_ID
+        ? {
+            accessKeyId: config.AWS_ACCESS_KEY_ID,
+            secretAccessKey: config.AWS_SECRET_ACCESS_KEY || '',
+          }
+        : undefined,
     };
-
-    // Caso utilize MinIO, Cloudflare R2 ou outro endpoint compatível com S3
-    if (endpoint) {
-      clientConfig.endpoint = endpoint;
-      clientConfig.forcePathStyle = true; // Necessário para R2/MinIO em alguns casos
+    if (this.endpoint) {
+      clientConfig.endpoint = this.endpoint;
+      clientConfig.forcePathStyle = true;
     }
-
-    this.s3Client = new S3Client(clientConfig);
+    this.s3 = new S3Client(clientConfig);
   }
 
-  async uploadFile(file: Express.Multer.File): Promise<UploadResult> {
-    if (!this.bucket) {
-      throw new Error('S3 Storage ativo mas AWS_BUCKET não foi configurado no arquivo .env.');
-    }
-
+  async uploadFile(file: UploadInput, userId: string): Promise<UploadResult> {
+    const { mime } = await validateUpload(file);
     const fileHash = crypto.randomBytes(8).toString('hex');
-    const cleanOriginalName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const uniqueFilename = `${Date.now()}-${fileHash}-${cleanOriginalName}`;
+    const clean = (file.originalname || 'file').replace(/[^a-zA-Z0-9.-]/g, '_').slice(-80);
+    const key = `${userId}/${Date.now()}-${fileHash}-${clean}`;
 
-    const uploadParams = {
-      Bucket: this.bucket,
-      Key: uniqueFilename,
-      Body: file.buffer,
-      ContentType: file.mimetype,
-    };
+    const stream = Readable.from(file.buffer);
+    const uploader = new Upload({
+      client: this.s3,
+      params: {
+        Bucket: this.bucket,
+        Key: key,
+        Body: stream,
+        ContentType: mime,
+      },
+    });
+    await uploader.done();
 
-    await this.s3Client.send(new PutObjectCommand(uploadParams));
-
-    // Monta a URL pública (usando endpoint customizado se houver)
-    let fileUrl = '';
-    const customEndpoint = process.env.AWS_ENDPOINT;
-    if (customEndpoint) {
-      // Formato para Cloudflare R2, MinIO ou custom
-      fileUrl = `${customEndpoint.replace(/\/$/, '')}/${this.bucket}/${uniqueFilename}`;
+    let fileUrl: string;
+    if (this.endpoint) {
+      fileUrl = `${this.endpoint.replace(/\/$/, '')}/${this.bucket}/${key}`;
     } else {
-      // Formato clássico da AWS S3
-      fileUrl = `https://${this.bucket}.s3.${this.region}.amazonaws.com/${uniqueFilename}`;
+      fileUrl = `https://${this.bucket}.s3.${this.region}.amazonaws.com/${key}`;
     }
-
-    return {
-      filename: uniqueFilename,
-      url: fileUrl
-    };
+    return { filename: key, url: fileUrl, mimetype: mime, size: file.size };
   }
 }
 
-// 3. Fábrica do StorageProvider
 class StorageFactory {
-  static getProvider(): IStorageProvider {
-    const storageType = (process.env.STORAGE_TYPE || 'local').toLowerCase();
-
-    if (storageType === 's3') {
-      console.log('[Storage] Usando driver AWS S3 Storage.');
+  static build(): IStorageProvider {
+    if (config.STORAGE_TYPE === 's3') {
+      logger.info('[Storage] Using AWS S3 driver');
       return new S3StorageProvider();
     }
-
-    console.log('[Storage] Usando driver Local Filesystem Storage.');
+    logger.info('[Storage] Using local filesystem driver');
     return new LocalStorageProvider();
   }
 }
 
-export const storage = StorageFactory.getProvider();
+export const storage = StorageFactory.build();
 export default storage;

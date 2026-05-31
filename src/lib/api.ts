@@ -2,8 +2,26 @@ import axios from 'axios';
 import { Group, Settings, WahaSession, Campaign } from '../types';
 
 const api = axios.create({
-  baseURL: '/api'
+  baseURL: '/api',
+  withCredentials: true,
 });
+
+// Redirect to /login on 401 (except on the login/register/me flows themselves)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401) {
+      const url: string = error?.config?.url || '';
+      const isAuthFlow = url.startsWith('/auth/');
+      if (!isAuthFlow && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  },
+);
+
+export default api;
 
 export const getSettings = async (): Promise<Settings> => {
   const { data } = await api.get('/settings');

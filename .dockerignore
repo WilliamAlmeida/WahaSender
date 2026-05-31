@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.gitignore
+*.log
+storage/database.sqlite
+storage/database.sqlite-journal
+storage/uploads
+data.json
+data.json.bak
+.env
+.env.local
+.vscode
+.idea
+README.md
+tests
