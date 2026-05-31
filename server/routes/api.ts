@@ -7,7 +7,13 @@ import db from '../db';
 import { config } from '../config';
 import { logger } from '../logger';
 import { requireAuth, requireWebhookSecret } from '../auth/middleware';
+import { verifyHmacSignature } from '../auth/hmac';
+import { audit } from '../lib/audit';
 import storage from '../storage';
+import templatesRouter from './templates';
+import apiTokensRouter from './api-tokens';
+import outboundWebhooksRouter from './outbound-webhooks';
+import contactsCsvRouter from './contacts-csv';
 import { enqueueContactsBulk, removeCampaignJobs, SendJobData } from '../queue';
 import { toWhatsappChatId } from '../lib/messaging';
 
@@ -15,6 +21,12 @@ const router = Router();
 
 // All API routes require auth except auth/* and webhook.
 router.use(requireAuth);
+
+// Sub-routers (also under requireAuth)
+router.use('/templates', templatesRouter);
+router.use('/api-tokens', apiTokensRouter);
+router.use('/outbound-webhooks', outboundWebhooksRouter);
+router.use('/contacts/csv', contactsCsvRouter);
 
 // -----------------------------------------------------------------------------
 // Helpers (per-user scoped)
@@ -205,7 +217,7 @@ router.post('/waha/sendTestMessage', async (req, res) => {
 router.get('/contacts', async (req, res) => {
   try {
     const userId = req.user!.id;
-    const contacts = await db('contacts').where({ userId }).orderBy('createdAt', 'desc');
+    const contacts = await db('contacts').where({ userId }).whereNull('deletedAt').orderBy('createdAt', 'desc');
     const relations = await db('group_contacts')
       .join('groups', 'group_contacts.groupId', 'groups.id')
       .where('groups.userId', userId)
@@ -369,9 +381,10 @@ router.put('/contacts/:id', async (req, res) => {
 router.delete('/contacts/:id', async (req, res) => {
   try {
     const userId = req.user!.id;
-    const contact = await db('contacts').where({ id: req.params.id, userId }).first();
+    const contact = await db('contacts').where({ id: req.params.id, userId }).whereNull('deletedAt').first();
     if (!contact) return res.status(404).json({ error: 'Contact not found' });
-    await db('contacts').where({ id: contact.id }).delete();
+    await db('contacts').where({ id: contact.id }).update({ deletedAt: new Date() });
+    await audit({ userId, action: 'delete', entityType: 'contact', entityId: contact.id, ip: req.ip });
     res.json({ status: 'success' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -387,6 +400,7 @@ router.get('/groups', async (req, res) => {
     const groups = await db('groups')
       .leftJoin('group_contacts', 'groups.id', 'group_contacts.groupId')
       .where('groups.userId', userId)
+      .whereNull('groups.deletedAt')
       .select('groups.id', 'groups.name')
       .count({ count: 'group_contacts.contactId' })
       .groupBy('groups.id', 'groups.name')
@@ -518,9 +532,10 @@ router.delete('/groups/:id', async (req, res) => {
         .status(400)
         .json({ error: 'Não é possível excluir um grupo em uso por campanha em andamento.' });
     }
-    const group = await db('groups').where({ id: req.params.id, userId }).first();
+    const group = await db('groups').where({ id: req.params.id, userId }).whereNull('deletedAt').first();
     if (!group) return res.status(404).json({ error: 'Group not found' });
-    await db('groups').where({ id: group.id }).delete();
+    await db('groups').where({ id: group.id }).update({ deletedAt: new Date() });
+    await audit({ userId, action: 'delete', entityType: 'group', entityId: group.id, ip: req.ip });
     res.json({ status: 'success' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -565,6 +580,7 @@ router.get('/campaigns', async (req, res) => {
     const userId = req.user!.id;
     const campaigns = await db('campaigns')
       .where({ userId })
+      .whereNull('deletedAt')
       .select('*')
       .orderBy('createdAt', 'desc');
     const ids = campaigns.map((c) => c.id);
@@ -829,10 +845,11 @@ router.post('/campaigns/:id/toggle', async (req, res) => {
 router.delete('/campaigns/:id', async (req, res) => {
   try {
     const userId = req.user!.id;
-    const camp = await db('campaigns').where({ id: req.params.id, userId }).first();
+    const camp = await db('campaigns').where({ id: req.params.id, userId }).whereNull('deletedAt').first();
     if (!camp) return res.status(404).json({ error: 'Campaign not found' });
     await removeCampaignJobs(camp.id);
-    await db('campaigns').where({ id: camp.id }).delete();
+    await db('campaigns').where({ id: camp.id }).update({ deletedAt: new Date(), status: 'Cancelled' });
+    await audit({ userId, action: 'delete', entityType: 'campaign', entityId: camp.id, ip: req.ip });
     res.json({ status: 'success' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -923,11 +940,20 @@ router.post('/campaigns/:id/queue/:index/toggle', async (req, res) => {
 });
 
 // =============================================================================
-// WAHA WEBHOOK (no auth — protected by shared secret)
+// WAHA WEBHOOK (no JWT — protected by shared secret + optional HMAC)
 // =============================================================================
 export const webhookRouter = Router();
 webhookRouter.post('/waha/webhook', requireWebhookSecret(config.WAHA_WEBHOOK_SECRET), async (req, res) => {
   try {
+    // Optional HMAC: when enabled, body MUST come signed in X-Webhook-Signature
+    if (config.WAHA_WEBHOOK_HMAC) {
+      const raw = (req as any).rawBody as Buffer | undefined;
+      const sig = req.header('X-Webhook-Signature') || req.header('X-Hub-Signature-256') || '';
+      if (!raw || !verifyHmacSignature(raw, config.WAHA_WEBHOOK_SECRET || '', sig)) {
+        return res.status(401).json({ error: 'Invalid HMAC signature' });
+      }
+    }
+
     const body = req.body || {};
     const event: string = body.event || body.type || 'unknown';
     const payload = body.payload || body.data || body;
@@ -953,7 +979,6 @@ webhookRouter.post('/waha/webhook', requireWebhookSecret(config.WAHA_WEBHOOK_SEC
         status,
         updatedAt: new Date(),
       });
-      // Adjust failure counters when transitioning to failed
       if (status === 'failed' && existing.status !== 'failed') {
         await db('campaigns').where({ id: existing.campaignId }).increment('failed', 1);
         await db('campaigns').where({ id: existing.campaignId }).decrement('sent', 1);

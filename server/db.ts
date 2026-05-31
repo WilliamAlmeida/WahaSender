@@ -7,7 +7,7 @@ const isSqlite = config.DB_CLIENT === 'sqlite3';
 
 const connectionConfig: any = isSqlite
   ? {
-      filename: path.resolve(process.cwd(), 'storage', 'database.sqlite'),
+      filename: config.DB_FILE || path.resolve(process.cwd(), 'storage', 'database.sqlite'),
     }
   : {
       host: config.DB_HOST,

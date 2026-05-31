@@ -1,18 +1,39 @@
 import { BrowserRouter as Router, Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
-import { Home, Users, Settings as SettingsIcon, MessageSquare, PlayCircle, Menu, X, Clock, Search, LogOut } from 'lucide-react';
+import {
+  Home,
+  Users,
+  Settings as SettingsIcon,
+  MessageSquare,
+  PlayCircle,
+  Menu,
+  X,
+  Clock,
+  Search,
+  LogOut,
+  FileText,
+  Key,
+  Webhook,
+  Upload,
+} from 'lucide-react';
 import { cn } from './lib/utils';
-import { useState, ReactNode } from 'react';
-import Settings from './pages/Settings';
-import Sessions from './pages/Sessions';
-import Groups from './pages/Groups';
-import Campaigns from './pages/Campaigns';
-import CampaignLogs from './pages/CampaignLogs';
-import GroupContacts from './pages/GroupContacts';
-import GlobalContacts from './pages/GlobalContacts';
-import Dashboard from './pages/Dashboard';
-import Queue from './pages/Queue';
-import Login from './pages/Login';
+import { useState, ReactNode, lazy, Suspense } from 'react';
+import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './lib/auth';
+import Login from './pages/Login';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Sessions = lazy(() => import('./pages/Sessions'));
+const Groups = lazy(() => import('./pages/Groups'));
+const Campaigns = lazy(() => import('./pages/Campaigns'));
+const CampaignLogs = lazy(() => import('./pages/CampaignLogs'));
+const GroupContacts = lazy(() => import('./pages/GroupContacts'));
+const GlobalContacts = lazy(() => import('./pages/GlobalContacts'));
+const Queue = lazy(() => import('./pages/Queue'));
+const Templates = lazy(() => import('./pages/Templates'));
+const ApiTokens = lazy(() => import('./pages/ApiTokens'));
+const OutboundWebhooks = lazy(() => import('./pages/OutboundWebhooks'));
+const ImportCsv = lazy(() => import('./pages/ImportCsv'));
 
 function Layout({ children }: { children: ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -22,9 +43,13 @@ function Layout({ children }: { children: ReactNode }) {
     { to: '/', icon: Home, label: 'Dashboard' },
     { to: '/sessions', icon: MessageSquare, label: 'Instâncias WAHA' },
     { to: '/contacts', icon: Search, label: 'Contatos' },
+    { to: '/contacts/import', icon: Upload, label: 'Importar CSV' },
     { to: '/groups', icon: Users, label: 'Grupos' },
+    { to: '/templates', icon: FileText, label: 'Templates' },
     { to: '/campaigns', icon: PlayCircle, label: 'Campanhas em Massa' },
     { to: '/queue', icon: Clock, label: 'Fila de Disparos' },
+    { to: '/api-tokens', icon: Key, label: 'API Tokens' },
+    { to: '/webhooks', icon: Webhook, label: 'Webhooks Outbound' },
     { to: '/settings', icon: SettingsIcon, label: 'Configurações' },
   ];
 
@@ -59,6 +84,7 @@ function Layout({ children }: { children: ReactNode }) {
             <NavLink
               key={item.to}
               to={item.to}
+              end={item.to === '/'}
               onClick={() => setMobileMenuOpen(false)}
               className={({ isActive }) =>
                 cn(
@@ -87,7 +113,7 @@ function Layout({ children }: { children: ReactNode }) {
             Sair
           </button>
           <div className="pt-2 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
-            v1.0.0
+            v2.1.0
           </div>
         </div>
       </aside>
@@ -98,7 +124,11 @@ function Layout({ children }: { children: ReactNode }) {
           </button>
           <div className="ml-auto w-8 h-8 bg-indigo-600 rounded flex items-center justify-center text-white font-bold text-xl italic">W</div>
         </header>
-        <div className="flex-1 overflow-y-auto p-4 md:p-8">{children}</div>
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
+          <Suspense fallback={<div className="text-sm text-slate-500">Carregando...</div>}>
+            {children}
+          </Suspense>
+        </div>
       </main>
     </div>
   );
@@ -120,78 +150,19 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route
-        path="/"
-        element={
-          <RequireAuth>
-            <Dashboard />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/sessions"
-        element={
-          <RequireAuth>
-            <Sessions />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/contacts"
-        element={
-          <RequireAuth>
-            <GlobalContacts />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/groups"
-        element={
-          <RequireAuth>
-            <Groups />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/groups/:id"
-        element={
-          <RequireAuth>
-            <GroupContacts />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/campaigns"
-        element={
-          <RequireAuth>
-            <Campaigns />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/campaigns/:id/logs"
-        element={
-          <RequireAuth>
-            <CampaignLogs />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/queue"
-        element={
-          <RequireAuth>
-            <Queue />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <RequireAuth>
-            <Settings />
-          </RequireAuth>
-        }
-      />
+      <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
+      <Route path="/sessions" element={<RequireAuth><Sessions /></RequireAuth>} />
+      <Route path="/contacts" element={<RequireAuth><GlobalContacts /></RequireAuth>} />
+      <Route path="/contacts/import" element={<RequireAuth><ImportCsv /></RequireAuth>} />
+      <Route path="/groups" element={<RequireAuth><Groups /></RequireAuth>} />
+      <Route path="/groups/:id" element={<RequireAuth><GroupContacts /></RequireAuth>} />
+      <Route path="/templates" element={<RequireAuth><Templates /></RequireAuth>} />
+      <Route path="/campaigns" element={<RequireAuth><Campaigns /></RequireAuth>} />
+      <Route path="/campaigns/:id/logs" element={<RequireAuth><CampaignLogs /></RequireAuth>} />
+      <Route path="/queue" element={<RequireAuth><Queue /></RequireAuth>} />
+      <Route path="/api-tokens" element={<RequireAuth><ApiTokens /></RequireAuth>} />
+      <Route path="/webhooks" element={<RequireAuth><OutboundWebhooks /></RequireAuth>} />
+      <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
     </Routes>
   );
 }
@@ -200,6 +171,7 @@ export default function App() {
   return (
     <Router>
       <AuthProvider>
+        <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
         <AppRoutes />
       </AuthProvider>
     </Router>

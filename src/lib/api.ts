@@ -1,4 +1,5 @@
 import axios from 'axios';
+import toast from 'react-hot-toast';
 import { Group, Settings, WahaSession, Campaign } from '../types';
 
 const api = axios.create({
@@ -6,16 +7,20 @@ const api = axios.create({
   withCredentials: true,
 });
 
-// Redirect to /login on 401 (except on the login/register/me flows themselves)
+// Redirect to /login on 401 + surface errors via toast (except auth flows)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error?.response?.status === 401) {
-      const url: string = error?.config?.url || '';
-      const isAuthFlow = url.startsWith('/auth/');
+    const status = error?.response?.status;
+    const url: string = error?.config?.url || '';
+    const isAuthFlow = url.startsWith('/auth/');
+    if (status === 401) {
       if (!isAuthFlow && typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
+    } else if (status >= 400 && !isAuthFlow) {
+      const msg = error?.response?.data?.error || error?.message || 'Erro inesperado';
+      toast.error(typeof msg === 'string' ? msg : 'Erro inesperado');
     }
     return Promise.reject(error);
   },
@@ -137,3 +142,42 @@ export const toggleQueueItem = async (campaignId: string, index: number): Promis
   const { data } = await api.post(`/campaigns/${campaignId}/queue/${index}/toggle`);
   return data;
 };
+
+// === v2.1 endpoints ===
+export const listTemplates = async () => (await api.get('/templates')).data;
+export const createTemplate = async (p: any) => (await api.post('/templates', p)).data;
+export const updateTemplate = async (id: string, p: any) => (await api.put(`/templates/${id}`, p)).data;
+export const deleteTemplate = async (id: string) => api.delete(`/templates/${id}`);
+
+export const listApiTokens = async () => (await api.get('/api-tokens')).data;
+export const createApiToken = async (p: { name: string; expiresAt?: string | null }) =>
+  (await api.post('/api-tokens', p)).data;
+export const revokeApiToken = async (id: string) => api.delete(`/api-tokens/${id}`);
+
+export const listOutboundWebhooks = async () => (await api.get('/outbound-webhooks')).data;
+export const createOutboundWebhook = async (p: any) => (await api.post('/outbound-webhooks', p)).data;
+export const updateOutboundWebhook = async (id: string, p: any) =>
+  (await api.put(`/outbound-webhooks/${id}`, p)).data;
+export const deleteOutboundWebhook = async (id: string) => api.delete(`/outbound-webhooks/${id}`);
+
+export const previewCsv = async (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  const { data } = await api.post('/contacts/csv/preview', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+};
+
+export const commitCsv = async (file: File, mapping?: Record<string, string>) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (mapping) fd.append('mapping', JSON.stringify(mapping));
+  const { data } = await api.post('/contacts/csv/commit', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+};
+
+export const changePassword = async (oldPassword: string, newPassword: string) =>
+  (await api.post('/auth/change-password', { oldPassword, newPassword })).data;

@@ -7,7 +7,9 @@ const LEGACY_EMAIL = 'legacy@local';
 
 /**
  * Returns the id of a "legacy" user used as default owner for data created
- * before authentication existed. Created on demand.
+ * before authentication existed. Created on demand and flagged as
+ * `claimable=true` so the first registration with this email atomically
+ * claims ownership of all legacy rows.
  */
 export async function ensureLegacyUserId(): Promise<string> {
   const existing = await db('users').where({ email: LEGACY_EMAIL }).first();
@@ -20,11 +22,13 @@ export async function ensureLegacyUserId(): Promise<string> {
     email: LEGACY_EMAIL,
     passwordHash,
     name: 'Legacy Owner',
+    role: 'admin',
+    claimable: true,
     createdAt: new Date(),
   });
   logger.warn(
     { email: LEGACY_EMAIL },
-    '[Migrations] Created legacy owner user for pre-existing data. Reset its password through the API to enable login.',
+    '[Migrations] Created legacy owner user. Register at /api/auth/register with this email to claim all legacy data.',
   );
   return id;
 }
@@ -141,9 +145,15 @@ export async function runMigrations(): Promise<void> {
     add: (t: any) => void,
   ): Promise<void> => {
     const exists = await db.schema.hasColumn(table, column);
-    if (!exists) {
+    if (exists) return;
+    try {
       await db.schema.alterTable(table, add);
       logger.info(`[Migrations] Added column ${table}.${column}`);
+    } catch (err: any) {
+      // Tolerate concurrent migrations or driver quirks reporting a duplicate
+      // column right after hasColumn returned false (Knex sqlite race).
+      if (/duplicate column/i.test(err?.message || '')) return;
+      throw err;
     }
   };
 
@@ -263,6 +273,97 @@ export async function runMigrations(): Promise<void> {
   // SQLite cannot cheaply ALTER existing UNIQUE constraints. Per-user phone
   // uniqueness is enforced at application layer using userId + phone.
   void isSqliteDb;
+
+  // ---------------------------------------------------------------------------
+  // v2.1 — audit, soft-delete, api tokens, templates, outbound webhooks, etc.
+  // ---------------------------------------------------------------------------
+
+  await ensureColumn('users', 'claimable', (t) => {
+    t.boolean('claimable').defaultTo(false);
+  });
+  await ensureColumn('users', 'role', (t) => {
+    t.string('role').defaultTo('user');
+  });
+
+  // Soft-delete columns
+  await ensureColumn('contacts', 'deletedAt', (t) => {
+    t.timestamp('deletedAt').nullable();
+  });
+  await ensureColumn('groups', 'deletedAt', (t) => {
+    t.timestamp('deletedAt').nullable();
+  });
+  await ensureColumn('campaigns', 'deletedAt', (t) => {
+    t.timestamp('deletedAt').nullable();
+  });
+
+  // Per-contact scheduling (drip / staggered campaigns)
+  await ensureColumn('campaign_pending_contacts', 'scheduledAt', (t) => {
+    t.timestamp('scheduledAt').nullable();
+  });
+
+  if (!(await db.schema.hasTable('audit_log'))) {
+    await db.schema.createTable('audit_log', (table) => {
+      table.increments('id').primary();
+      table.string('userId').nullable();
+      table.string('action').notNullable();
+      table.string('entityType').notNullable();
+      table.string('entityId').nullable();
+      table.text('metadata').nullable();
+      table.string('ip').nullable();
+      table.string('userAgent').nullable();
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.index(['userId']);
+      table.index(['entityType', 'entityId']);
+      table.index(['createdAt']);
+    });
+    logger.info('[Migrations] Created table "audit_log"');
+  }
+
+  if (!(await db.schema.hasTable('api_tokens'))) {
+    await db.schema.createTable('api_tokens', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('name').notNullable();
+      table.string('hashedToken').notNullable().unique();
+      table.string('prefix').notNullable(); // first 8 chars to display
+      table.text('scopes').defaultTo('[]');
+      table.timestamp('lastUsedAt').nullable();
+      table.timestamp('expiresAt').nullable();
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.timestamp('revokedAt').nullable();
+      table.index(['userId']);
+    });
+    logger.info('[Migrations] Created table "api_tokens"');
+  }
+
+  if (!(await db.schema.hasTable('templates'))) {
+    await db.schema.createTable('templates', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('name').notNullable();
+      table.text('body').notNullable();
+      table.text('variables').defaultTo('[]');
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.timestamp('updatedAt').defaultTo(db.fn.now());
+      table.timestamp('deletedAt').nullable();
+      table.index(['userId']);
+    });
+    logger.info('[Migrations] Created table "templates"');
+  }
+
+  if (!(await db.schema.hasTable('outbound_webhooks'))) {
+    await db.schema.createTable('outbound_webhooks', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('event').notNullable();
+      table.string('url').notNullable();
+      table.string('secret').nullable();
+      table.boolean('active').defaultTo(true);
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.index(['userId', 'event']);
+    });
+    logger.info('[Migrations] Created table "outbound_webhooks"');
+  }
 
   logger.info('[Migrations] Migrations complete');
 }
