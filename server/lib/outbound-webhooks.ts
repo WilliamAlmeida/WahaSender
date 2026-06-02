@@ -29,12 +29,9 @@ export async function dispatchOutbound(
   event: OutboundEvent,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  let rows: OutboundRow[] = [];
-  try {
-    rows = await db('outbound_webhooks').where({ userId, event, active: true });
-  } catch {
-    return; // table may not exist in older deployments
-  }
+  const rows: OutboundRow[] = await db('outbound_webhooks')
+    .where({ userId, event, active: true })
+    .catch(() => [] as OutboundRow[]);
   if (!rows.length) return;
 
   const body = JSON.stringify({ event, deliveredAt: new Date().toISOString(), data: payload });

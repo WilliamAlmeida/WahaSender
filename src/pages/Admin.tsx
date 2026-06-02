@@ -34,7 +34,6 @@ export default function Admin() {
 
   useEffect(() => {
     load().catch(() => toast.error('Acesso restrito a administradores'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleStatus = async (u: any) => {

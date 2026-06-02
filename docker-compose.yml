@@ -49,6 +49,19 @@ services:
       STORAGE_TYPE: ${STORAGE_TYPE:-local}
       WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # SaaS: self-service, e-mail and Mercado Pago billing
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3000}
+      ENABLE_SIGNUP: ${ENABLE_SIGNUP:-true}
+      REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-false}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_SECURE: ${MAIL_SECURE:-false}
+      MAIL_USER: ${MAIL_USER:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-WahaSender <no-reply@wahasender.local>}
+      MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-}
+      MP_PUBLIC_KEY: ${MP_PUBLIC_KEY:-}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-}
     ports:
       - "${PORT:-3000}:3000"
     volumes:
