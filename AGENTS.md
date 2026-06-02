@@ -2,7 +2,7 @@
 
 ## Regra principal
 
-**Não suba o servidor.** Não execute `npm run dev`, `npm start`, `npm run dev:worker` nem qualquer comando que inicie o processo Express ou o worker BullMQ. Se precisar confirmar comportamento em runtime, solicite ao usuário que rode o servidor e descreva o que deve ser observado.
+**Não suba o servidor.** Não execute `npm run dev`, `npm start`, `npm run dev:worker` nem qualquer comando que inicie o processo Express ou o worker BullMQ. Se precisar confirmar comportamento em runtime, solicite ao usuário que rode o servidor e descreva o que deve ser observado. (Só faça isso caso o usuário não tenha pedido para rodar o servidor anteriormente para você.)
 
 ---
 

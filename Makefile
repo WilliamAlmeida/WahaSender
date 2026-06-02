@@ -140,18 +140,16 @@ pm2-delete-all:
 	-@pm2 delete "$(PM2_WORKER_NAME)"
 
 pm2-restart-all:
-	-@pm2 restart "$(PM2_WEB_NAME)" --update-env
-	-@pm2 restart "$(PM2_WORKER_NAME)" --update-env
+	@$(MAKE) pm2-start-web
+	@$(MAKE) pm2-start-worker
 
-deploy-web: build
-	@pm2 restart "$(PM2_WEB_NAME)" --update-env || $(MAKE) pm2-start-web
+deploy-web:
+	@$(MAKE) pm2-start-web
 
-deploy-worker: build
-	@pm2 restart "$(PM2_WORKER_NAME)" --update-env || $(MAKE) pm2-start-worker
+deploy-worker:
+	@$(MAKE) pm2-start-worker
 
-deploy-all: build
-	@$(MAKE) deploy-web
-	@$(MAKE) deploy-worker
+deploy-all: build deploy-web deploy-worker
 	@echo "Deploy completo concluido."
 
 pm2-status:
