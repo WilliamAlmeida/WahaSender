@@ -5,6 +5,7 @@ import { logger } from '../logger';
 export const QUEUE_NAME = 'campaign-messages';
 export const SCHEDULER_QUEUE_NAME = 'campaign-scheduler';
 export const GENERATE_QUEUE_NAME = 'generate-pending-contacts';
+export const EMAIL_QUEUE_NAME = 'transactional-emails';
 
 export interface SendJobData {
   campaignId: string;
@@ -15,6 +16,7 @@ export interface SendJobData {
 let queueInstance: Queue | null = null;
 let schedulerQueue: Queue | null = null;
 let generateQueue: Queue | null = null;
+let emailQueue: Queue | null = null;
 
 export function getCampaignQueue(): Queue {
   if (queueInstance) return queueInstance;
@@ -40,6 +42,20 @@ export function getGenerateQueue(): Queue {
   if (generateQueue) return generateQueue;
   generateQueue = new Queue(GENERATE_QUEUE_NAME, { connection: getConnectionOptions() });
   return generateQueue;
+}
+
+export function getEmailQueue(): Queue {
+  if (emailQueue) return emailQueue;
+  emailQueue = new Queue(EMAIL_QUEUE_NAME, {
+    connection: getConnectionOptions(),
+    defaultJobOptions: {
+      removeOnComplete: { age: 3600, count: 1000 },
+      removeOnFail: { age: 24 * 3600 },
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+    },
+  });
+  return emailQueue;
 }
 
 export function jobIdFor(campaignId: string, contactId: string): string {
@@ -97,4 +113,16 @@ export async function enqueueGeneratePendingContacts(
   await q.add('generate', data, {
     jobId: `gen-pending-${data.campaignId}`,
   });
+}
+
+export interface EmailJobData {
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+}
+
+export async function enqueueEmail(data: EmailJobData): Promise<void> {
+  const q = getEmailQueue();
+  await q.add('send-email', data);
 }

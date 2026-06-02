@@ -1,6 +1,7 @@
 import nodemailer, { Transporter } from 'nodemailer';
 import { config } from '../config';
 import { logger } from '../logger';
+import { enqueueEmail } from '../queue';
 
 /**
  * Transactional e-mail abstraction. Uses SMTP via nodemailer when MAIL_HOST is
@@ -87,6 +88,28 @@ export async function sendVerificationEmail(to: string, link: string): Promise<v
 
 export async function sendPasswordResetEmail(to: string, link: string): Promise<void> {
   await sendMail({
+    to,
+    subject: 'Redefinição de senha — WahaSender',
+    html: wrap(
+      'Redefinir sua senha',
+      `<p>Recebemos um pedido para redefinir sua senha. O link expira em 1 hora.</p>${button(link, 'Redefinir senha')}`,
+    ),
+  });
+}
+
+export async function queueVerificationEmail(to: string, link: string): Promise<void> {
+  await enqueueEmail({
+    to,
+    subject: 'Confirme seu e-mail — WahaSender',
+    html: wrap(
+      'Confirme seu endereço de e-mail',
+      `<p>Bem-vindo(a)! Confirme seu e-mail para ativar sua conta.</p>${button(link, 'Confirmar e-mail')}`,
+    ),
+  });
+}
+
+export async function queuePasswordResetEmail(to: string, link: string): Promise<void> {
+  await enqueueEmail({
     to,
     subject: 'Redefinição de senha — WahaSender',
     html: wrap(

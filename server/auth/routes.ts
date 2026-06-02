@@ -16,7 +16,7 @@ import {
 import { cookieOptions, requireAuth } from './middleware';
 import { revokeJti } from './jwt-blocklist';
 import { createEmailToken, consumeEmailToken } from './email-tokens';
-import { sendVerificationEmail, sendPasswordResetEmail } from '../lib/mailer';
+import { queueVerificationEmail, queuePasswordResetEmail } from '../lib/mailer';
 import { assignFreePlan } from '../lib/entitlements';
 import { audit } from '../lib/audit';
 import { logger } from '../logger';
@@ -28,8 +28,8 @@ const RESET_TTL_MS = 60 * 60 * 1000; // 1h
 async function issueVerification(userId: string, email: string): Promise<void> {
   const raw = await createEmailToken(userId, 'verify', VERIFY_TTL_MS);
   const link = `${config.APP_PUBLIC_URL}/verificar-email?token=${raw}`;
-  await sendVerificationEmail(email, link).catch((err) =>
-    logger.warn({ err: err.message, email }, '[Auth] verification e-mail failed'),
+  await queueVerificationEmail(email, link).catch((err) =>
+    logger.warn({ err: err.message, email }, '[Auth] verification e-mail queue failed'),
   );
 }
 
@@ -147,8 +147,8 @@ router.post('/forgot-password', async (req, res) => {
     if (row && !row.claimable) {
       const raw = await createEmailToken(row.id, 'reset', RESET_TTL_MS);
       const link = `${config.APP_PUBLIC_URL}/redefinir-senha?token=${raw}`;
-      await sendPasswordResetEmail(row.email, link).catch((err) =>
-        logger.warn({ err: err.message }, '[Auth] reset e-mail failed'),
+      await queuePasswordResetEmail(row.email, link).catch((err) =>
+        logger.warn({ err: err.message }, '[Auth] reset e-mail queue failed'),
       );
     }
     res.json({ ok: true });

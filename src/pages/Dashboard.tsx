@@ -46,8 +46,8 @@ export default function Dashboard() {
 
   // --- STATS CALCULATION ---
   const activeSessions = sessions.filter(s => s.status === 'WORKING').length;
-  
-  const totalContacts = groups.reduce((acc, g) => acc + g.count, 0);
+
+  const totalContacts = contacts.length;
   
   const activeCampaigns = campaigns.filter(c => c.status === 'Running').length;
   

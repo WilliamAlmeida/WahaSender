@@ -96,7 +96,7 @@ export const getContacts = async (): Promise<any[]> => {
   return data;
 };
 
-export const importGlobalContacts = async (contacts: any[]): Promise<{success: boolean, count: number}> => {
+export const importGlobalContacts = async (contacts: any[]): Promise<{success: boolean, count: number, skipped?: number, limitReached?: boolean, limit?: number, planName?: string}> => {
   const { data } = await api.post('/contacts/import', { contacts });
   return data;
 };
@@ -113,6 +113,11 @@ export const updateContact = async (id: string, updates: any): Promise<any> => {
 
 export const deleteContact = async (id: string): Promise<void> => {
   await api.delete(`/contacts/${id}`);
+};
+
+export const deleteAllContacts = async (): Promise<{ deleted: number }> => {
+  const { data } = await api.delete('/contacts');
+  return data;
 };
 
 export const deleteCampaign = async (id: string): Promise<void> => {

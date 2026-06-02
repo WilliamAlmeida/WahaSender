@@ -32,6 +32,21 @@ function applySecretFiles(): void {
 
 applySecretFiles();
 
+/**
+ * Parses boolean env vars the way humans expect. `z.coerce.boolean()` is a trap:
+ * it runs `Boolean(value)`, so the string "false" (non-empty) coerces to `true`.
+ * Here, only "true"/"1"/"yes"/"on" (case-insensitive) are truthy; everything
+ * else — including "false", "0", "no", "" — is falsy.
+ */
+const boolFromEnv = (defaultValue: boolean) =>
+  z
+    .union([z.boolean(), z.string()])
+    .default(defaultValue)
+    .transform((v) => {
+      if (typeof v === 'boolean') return v;
+      return ['true', '1', 'yes', 'on'].includes(v.trim().toLowerCase());
+    });
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -46,7 +61,7 @@ const envSchema = z.object({
   DB_USER: z.string().default('postgres'),
   DB_PASSWORD: z.string().default('password'),
   DB_DATABASE: z.string().default('waha_sender'),
-  DB_SSL: z.coerce.boolean().default(false),
+  DB_SSL: boolFromEnv(false),
   DB_POOL_MIN: z.coerce.number().int().min(0).default(2),
   DB_POOL_MAX: z.coerce.number().int().min(1).default(10),
 
@@ -67,15 +82,15 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16).default('change-me-please-change-me-please'),
   JWT_EXPIRES_IN: z.string().default('7d'),
   COOKIE_NAME: z.string().default('waha_session'),
-  COOKIE_SECURE: z.coerce.boolean().default(false),
+  COOKIE_SECURE: boolFromEnv(false),
   PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
-  PASSWORD_REQUIRE_COMPLEXITY: z.coerce.boolean().default(true),
+  PASSWORD_REQUIRE_COMPLEXITY: boolFromEnv(true),
 
   WAHA_WEBHOOK_SECRET: z.string().optional(),
-  WAHA_WEBHOOK_HMAC: z.coerce.boolean().default(false),
+  WAHA_WEBHOOK_HMAC: boolFromEnv(false),
 
-  BULL_BOARD_ENABLED: z.coerce.boolean().default(true),
-  METRICS_ENABLED: z.coerce.boolean().default(true),
+  BULL_BOARD_ENABLED: boolFromEnv(true),
+  METRICS_ENABLED: boolFromEnv(true),
 
   UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(20 * 1024 * 1024),
 
@@ -89,15 +104,15 @@ const envSchema = z.object({
   // Public URL used to build links in transactional e-mails (verify/reset/checkout return).
   APP_PUBLIC_URL: z.string().url().default('http://localhost:3000'),
   // Toggle open registration (self-service signup). Bootstrap admin works regardless.
-  ENABLE_SIGNUP: z.coerce.boolean().default(true),
+  ENABLE_SIGNUP: boolFromEnv(true),
   // Require a verified e-mail before a tenant can start sending campaigns.
-  REQUIRE_EMAIL_VERIFICATION: z.coerce.boolean().default(false),
+  REQUIRE_EMAIL_VERIFICATION: boolFromEnv(false),
 
   // Transactional e-mail (SMTP). When MAIL_HOST is unset, e-mails are logged to
   // the console instead of being sent (handy for local/dev).
   MAIL_HOST: z.string().optional(),
   MAIL_PORT: z.coerce.number().int().positive().default(587),
-  MAIL_SECURE: z.coerce.boolean().default(false),
+  MAIL_SECURE: boolFromEnv(false),
   MAIL_USER: z.string().optional(),
   MAIL_PASSWORD: z.string().optional(),
   MAIL_FROM: z.string().default('WahaSender <no-reply@wahasender.local>'),

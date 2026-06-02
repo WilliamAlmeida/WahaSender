@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { getGroup, updateGroup, getContacts } from '../lib/api';
-import { ArrowLeft, Search, Trash2, Edit2, Check, X, UserPlus, UserCheck } from 'lucide-react';
+import { ArrowLeft, Search, Trash2, Edit2, Check, X, UserCheck } from 'lucide-react';
 import { Modal } from '../components/Modal';
 
 const formatPhone = (phone: string) => {
@@ -73,11 +73,6 @@ export default function GroupContacts() {
   const [contactToDelete, setContactToDelete] = useState<string | null>(null);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
 
-  // Manual Contact Add
-  const [manualName, setManualName] = useState('');
-  const [manualPhone, setManualPhone] = useState('');
-  const [showAddModal, setShowAddModal] = useState(false);
-
   const fetchGroup = async () => {
     try {
       const g = await getGroup(id!);
@@ -132,26 +127,6 @@ export default function GroupContacts() {
     await updateGroup(id!, { contacts: updatedContacts });
   };
 
-  const handleAddManualContact = async () => {
-    const p = manualPhone.replace(/\D/g, '');
-    if (p.length < 10 || p.length > 15) {
-      setAlertMsg('Telefone inválido. Insira apenas números, com DDD. Ex: 5511999999999');
-      return;
-    }
-    const newContact = { 
-      _id: Date.now().toString() + Math.random().toString(36).substr(2, 9), 
-      name: manualName.trim(), 
-      phone: p 
-    };
-    const updatedContacts = [...group.contacts, newContact];
-    setGroup({ ...group, contacts: updatedContacts });
-    await updateGroup(id!, { contacts: updatedContacts });
-    setManualName('');
-    setManualPhone('');
-    setShowAddModal(false);
-    setAlertMsg('Contato adicionado com sucesso!');
-  };
-
   // Lógica de seleção e filtragem dos contatos globais salvos
   const isAlreadyInGroup = (globalContact: any) => {
     const cleanGlobalPhone = (globalContact.phone || globalContact.telefone)?.toString().replace(/\D/g, '');
@@ -201,9 +176,9 @@ export default function GroupContacts() {
       const phoneClean = (sc.phone || sc.telefone)?.toString().replace(/\D/g, '');
       if (!existingPhones.has(phoneClean)) {
         newContactsToAppend.push({
-          _id: Date.now().toString() + Math.random().toString(36).substr(2, 9), 
-          name: sc.name.trim(), 
-          phone: phoneClean 
+          _id: sc._id,
+          name: sc.name.trim(),
+          phone: phoneClean
         });
         existingPhones.add(phoneClean);
       }
@@ -316,22 +291,22 @@ export default function GroupContacts() {
           />
         </div>
         <div className="flex gap-2">
-          <button 
+          <button
             onClick={() => { fetchGlobalContacts(); setShowSelectSavedModal(true); }}
             className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg border border-indigo-200 transition-colors min-w-max shadow-sm"
           >
             <UserCheck className="w-4 h-4" />
             Importar Contatos Salvos
           </button>
-          <button 
-            onClick={() => { setManualName(''); setManualPhone(''); setShowAddModal(true); }}
-            className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-black transition-colors min-w-max shadow-sm"
-          >
-            <UserPlus className="w-4 h-4" />
-            Add Contato
-          </button>
         </div>
       </div>
+      <p className="text-[11px] text-slate-400 font-medium -mt-2 shrink-0">
+        Para adicionar novos contatos ao sistema, cadastre-os primeiro no{' '}
+        <Link to="/contacts" className="font-bold text-indigo-500 hover:text-indigo-700 underline">
+          Diretório Global
+        </Link>
+        .
+      </p>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 flex flex-col min-h-0">
         <div className="flex-1 overflow-auto">
@@ -374,7 +349,11 @@ export default function GroupContacts() {
                 </tr>
               ))}
               {paginatedContacts.length === 0 && (
-                <tr><td colSpan={4} className="p-8 text-center text-slate-400 font-medium">Nenhum contato encontrado.</td></tr>
+                <tr><td colSpan={4} className="p-8 text-center text-slate-400 font-medium">
+                  {group.contacts.length === 0
+                    ? 'Grupo vazio. Use "Importar Contatos Salvos" para adicionar contatos do Diretório Global.'
+                    : 'Nenhum contato encontrado para esta busca.'}
+                </td></tr>
               )}
             </tbody>
           </table>
@@ -435,40 +414,6 @@ export default function GroupContacts() {
           </button>
           <button onClick={confirmBulkDelete} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-colors">
             Excluir
-          </button>
-        </div>
-      </Modal>
-
-      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title="Adicionar Contato Manual">
-        <div className="space-y-4 mb-6">
-          <div>
-            <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Nome (opcional)</label>
-            <input 
-              type="text" 
-              value={manualName} 
-              onChange={e => setManualName(e.target.value)} 
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-          <div>
-            <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1">Telefone / WhatsApp</label>
-            <input 
-              type="text" 
-              inputMode="numeric"
-              value={manualPhone} 
-              onChange={e => setManualPhone(e.target.value.replace(/\D/g, ''))} 
-              onKeyDown={e => e.key === 'Enter' ? handleAddManualContact() : null}
-              placeholder="Ex: 551199999999"
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:ring-indigo-500 focus:border-indigo-500"
-            />
-          </div>
-        </div>
-        <div className="flex justify-end gap-3">
-          <button onClick={() => setShowAddModal(false)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">
-            Cancelar
-          </button>
-          <button onClick={handleAddManualContact} className="px-4 py-2 bg-slate-900 hover:bg-black text-white font-bold rounded-lg transition-colors flex items-center gap-1.5">
-            <UserPlus className="w-4 h-4" /> Add
           </button>
         </div>
       </Modal>

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import db from '../db';
 import { parseContactsFile } from '../lib/csv';
 import { audit } from '../lib/audit';
+import { getEntitlements, countActiveContacts } from '../lib/entitlements';
 
 const router = Router();
 
@@ -57,8 +58,24 @@ router.post('/commit', upload.single('file'), async (req, res) => {
       .whereNull('deletedAt');
     const byPhone = new Map(existing.map((c) => [c.phone, c]));
 
+    // Determine how many net-new contacts the plan allows.
+    let allowedNew = rows.filter((r) => !byPhone.has(r.phone)).length;
+    let planLimit = -1;
+    let planName = '';
+    if (req.user!.role !== 'admin') {
+      const { plan } = await getEntitlements(userId);
+      if (plan.maxContacts >= 0) {
+        planLimit = plan.maxContacts;
+        planName = plan.name;
+        const used = await countActiveContacts(userId);
+        const remaining = Math.max(0, plan.maxContacts - used);
+        allowedNew = Math.min(allowedNew, remaining);
+      }
+    }
+
     const toInsert: any[] = [];
     let updated = 0;
+    let inserted = 0;
     for (const r of rows) {
       const ex = byPhone.get(r.phone);
       if (ex) {
@@ -68,6 +85,7 @@ router.post('/commit', upload.single('file'), async (req, res) => {
           updated++;
         }
       } else {
+        if (inserted >= allowedNew) continue; // plan cap reached
         toInsert.push({
           id: crypto.randomUUID(),
           name: r.name ?? null,
@@ -75,17 +93,21 @@ router.post('/commit', upload.single('file'), async (req, res) => {
           blacklisted: false,
           userId,
         });
+        inserted++;
       }
     }
     if (toInsert.length > 0) await db.batchInsert('contacts', toInsert, 200);
+
+    const uniqueNew = rows.filter((r) => !byPhone.has(r.phone)).length;
+    const skipped = uniqueNew - inserted;
     await audit({
       userId,
       action: 'create',
       entityType: 'contacts-csv',
-      metadata: { inserted: toInsert.length, updated },
+      metadata: { inserted, updated, skipped },
       ip: req.ip,
     });
-    res.json({ inserted: toInsert.length, updated });
+    res.json({ inserted, updated, skipped, limitReached: skipped > 0, limit: planLimit, planName });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }

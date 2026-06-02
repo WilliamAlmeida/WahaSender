@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { getContacts, updateContact, deleteContact, importGlobalContacts, getContactCampaigns } from '../lib/api';
-import { 
-  Users, Search, Trash2, Edit2, ShieldAlert, Shield, Upload, List, History, 
-  PlayCircle, XCircle, CheckCircle, UserPlus, Table, ArrowRight, Check 
+import { useSearchParams, Link } from 'react-router-dom';
+import { getContacts, updateContact, deleteContact, deleteAllContacts, importGlobalContacts, getContactCampaigns } from '../lib/api';
+import {
+  Users, Search, Trash2, Edit2, ShieldAlert, Shield, Upload, List, History,
+  PlayCircle, XCircle, CheckCircle, UserPlus, Table, ArrowRight, Check, ChevronDown, MoreVertical, AlertTriangle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Modal } from '../components/Modal';
@@ -40,6 +40,15 @@ export default function GlobalContacts() {
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Resultado da importação (modal informativo)
+  const [importResult, setImportResult] = useState<{
+    imported: number;
+    skipped: number;
+    invalid: number;
+    limit?: number;
+    planName?: string;
+  } | null>(null);
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -55,6 +64,7 @@ export default function GlobalContacts() {
   const [contactToDelete, setContactToDelete] = useState<string | null>(null);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [showBulkRestoreConfirm, setShowBulkRestoreConfirm] = useState(false);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
 
   // Groups
   const [showGroupsForContact, setShowGroupsForContact] = useState<any | null>(null);
@@ -174,24 +184,30 @@ export default function GlobalContacts() {
       });
 
       const validData = filterValidContacts(mappedData);
+      const invalid = mappedData.length - validData.length;
 
       if (validData.length === 0) {
-        alert("Nenhum contato válido encontrado após o mapeamento (verifique se a coluna de telefone contém números com DDD).");
+        setImportResult({ imported: 0, skipped: 0, invalid });
         if (fileInputRef.current) fileInputRef.current.value = '';
         setImporting(false);
         return;
       }
 
-      if (validData.length < mappedData.length) {
-        alert(`${mappedData.length - validData.length} contatos ignorados por formato de telefone inválido.`);
-      }
-
-      await importGlobalContacts(validData);
+      const res = await importGlobalContacts(validData);
       await fetchContacts();
 
-    } catch (err) {
+      setImportResult({
+        imported: res.count ?? 0,
+        skipped: res.skipped ?? 0,
+        invalid,
+        limit: res.limit,
+        planName: res.planName,
+      });
+
+    } catch (err: any) {
       console.error('Erro ao importar contatos', err);
-      alert('Falha ao importar contatos.');
+      const apiMsg = err?.response?.data?.error;
+      alert(apiMsg || 'Falha ao importar contatos.');
     } finally {
       setImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -245,8 +261,9 @@ export default function GlobalContacts() {
       setManualName('');
       setManualPhone('');
       setShowAddModal(false);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to add manual contact', e);
+      alert(e?.response?.data?.error || 'Falha ao adicionar contato.');
     }
   };
 
@@ -327,6 +344,20 @@ export default function GlobalContacts() {
     }
   };
 
+  const confirmDeleteAll = async () => {
+    if (contacts.length === 0) return;
+    try {
+      await deleteAllContacts();
+      setContacts([]);
+      setSelectedIds(new Set());
+    } catch (e) {
+      console.error('Failed to delete all contacts', e);
+      alert('Erro ao deletar todos os contatos');
+    } finally {
+      setShowDeleteAllConfirm(false);
+    }
+  };
+
   const toggleSelectAll = () => {
     if (selectedIds.size === paginatedContacts.length) {
       setSelectedIds(new Set());
@@ -344,62 +375,81 @@ export default function GlobalContacts() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 flex flex-col h-[calc(100vh-8rem)]">
-      <div className="flex items-center justify-between shrink-0">
+      <div className="flex items-start justify-between shrink-0 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Diretório Global de Contatos</h1>
           <p className="text-sm text-slate-500">Único repositório contendo {contacts.length} contatos sincronizados.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-3 items-end">
+          {/* Ações em Bulk */}
           {selectedIds.size > 0 && activeTab === 'blacklisted' && (
-            <button 
-              onClick={() => setShowBulkRestoreConfirm(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg text-sm font-bold border border-green-200 transition-colors shadow-sm"
-            >
-              <Shield className="w-4 h-4" />
-              Remover da Blacklist ({selectedIds.size})
-            </button>
+              <div className="flex gap-2 flex-wrap justify-end">
+                <button
+                  onClick={() => setShowBulkRestoreConfirm(true)}
+                  className="flex items-center gap-2 px-3 py-2 bg-green-50 hover:bg-green-100 text-green-700 rounded-lg text-xs font-bold border border-green-200 transition-colors shadow-sm whitespace-nowrap"
+                >
+                  <Shield className="w-4 h-4" />
+                  Remover da Blacklist
+                </button>
+            </div>
           )}
-          {selectedIds.size > 0 && (
-            <button 
-              onClick={() => setShowBulkDeleteConfirm(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-bold border border-red-200 transition-colors shadow-sm"
-            >
-              <Trash2 className="w-4 h-4" />
-              Excluir Selecionados ({selectedIds.size})
-            </button>
-          )}
-          
-          <button 
-            onClick={handleDownloadTemplate}
-            className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-sm font-bold border border-slate-200 transition-colors shadow-sm"
-            title="Baixar planilha de exemplo com layout correto de colunas"
-          >
-            <Table className="w-4 h-4 text-slate-500" />
-            Baixar Modelo
-          </button>
 
-          <input
-            type="file"
-            accept=".csv, .xlsx, .xls"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importing}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm disabled:opacity-50"
-          >
-            <Upload className="w-4 h-4" />
-            {importing ? 'Processando...' : 'Importar Planilha'}
-          </button>
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-black text-white rounded-lg text-sm font-bold transition-colors shadow-sm"
-          >
-            <UserPlus className="w-4 h-4" />
-            Adicionar Manual
-          </button>
+          {/* Ações de Importação/Adição */}
+          <div className="flex gap-2 flex-wrap justify-end">
+            <button
+              onClick={handleDownloadTemplate}
+              className="flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold border border-slate-200 transition-colors shadow-sm"
+              title="Baixar planilha de exemplo com layout correto de colunas"
+            >
+              <Table className="w-4 h-4" />
+              Modelo
+            </button>
+
+            <input
+              type="file"
+              accept=".csv, .xlsx, .xls"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importing}
+              className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors shadow-sm disabled:opacity-50"
+            >
+              <Upload className="w-4 h-4" />
+              {importing ? 'Proc...' : 'Importar'}
+            </button>
+
+            {contacts.length > 0 && selectedIds.size === 0 && (
+              <button
+                onClick={() => setShowDeleteAllConfirm(true)}
+                className="flex items-center gap-2 px-3 py-2 bg-orange-50 hover:bg-orange-100 text-orange-600 rounded-lg text-xs font-bold border border-orange-200 transition-colors shadow-sm"
+                title="Deletar todos os contatos importados"
+              >
+                <Trash2 className="w-4 h-4" />
+                Deletar Tudo
+              </button>
+            )}
+            
+            {selectedIds.size > 0 && (
+              <button
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                className="flex items-center gap-2 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-bold border border-red-200 transition-colors shadow-sm whitespace-nowrap"
+              >
+                <Trash2 className="w-4 h-4" />
+                Excluir {selectedIds.size}
+              </button>
+            )}
+
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-colors shadow-sm"
+            >
+              <UserPlus className="w-4 h-4" />
+              Manual
+            </button>
+          </div>
         </div>
       </div>
 
@@ -817,6 +867,83 @@ export default function GlobalContacts() {
         <div className="flex justify-end">
           <button onClick={() => setCampaignsHistoryFor(null)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">
             Fechar
+          </button>
+        </div>
+      </Modal>
+
+      <Modal isOpen={!!importResult} onClose={() => setImportResult(null)} title="Resultado da Importação">
+        {importResult && (
+          <>
+            <div className="mb-6 space-y-3">
+              {importResult.imported > 0 && (
+                <div className="p-4 bg-green-50 border border-green-200 rounded-lg flex gap-3">
+                  <CheckCircle className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
+                  <p className="text-sm font-bold text-green-800">
+                    {importResult.imported} contato(s) importado(s) com sucesso.
+                  </p>
+                </div>
+              )}
+
+              {importResult.skipped > 0 && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg flex gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-bold text-amber-900">
+                      {importResult.skipped} contato(s) não importado(s) — limite do plano atingido.
+                    </p>
+                    <p className="text-sm text-amber-700 mt-1">
+                      Seu plano {importResult.planName || ''} permite até {importResult.limit} contatos.
+                      Para importar todos,{' '}
+                      <Link to="/billing" className="font-bold underline hover:text-amber-900">
+                        faça upgrade do seu plano
+                      </Link>
+                      .
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {importResult.invalid > 0 && (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg flex gap-3">
+                  <XCircle className="w-5 h-5 text-slate-500 shrink-0 mt-0.5" />
+                  <p className="text-sm text-slate-600">
+                    {importResult.invalid} linha(s) ignorada(s) por telefone em formato inválido (verifique se contêm DDD).
+                  </p>
+                </div>
+              )}
+
+              {importResult.imported === 0 && importResult.skipped === 0 && importResult.invalid === 0 && (
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                  <p className="text-sm text-slate-600">Nenhum contato novo para importar (todos já existem no diretório).</p>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <button onClick={() => setImportResult(null)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition-colors">
+                Entendido
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal isOpen={showDeleteAllConfirm} onClose={() => setShowDeleteAllConfirm(false)} title="Deletar Todos os Contatos">
+        <div className="mb-6 space-y-4">
+          <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex gap-3">
+            <Trash2 className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-bold text-red-900">Ação Irreversível</p>
+              <p className="text-sm text-red-700 mt-1">Tem certeza que deseja deletar todos os {contacts.length} contatos globalmente? Eles serão removidos de TODOS os grupos e campanhas.</p>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3">
+          <button onClick={() => setShowDeleteAllConfirm(false)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition-colors">
+            Cancelar
+          </button>
+          <button onClick={confirmDeleteAll} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-colors flex items-center gap-2">
+            <Trash2 className="w-4 h-4" />
+            Deletar Tudo
           </button>
         </div>
       </Modal>

@@ -9,13 +9,17 @@ import {
   QUEUE_NAME,
   SCHEDULER_QUEUE_NAME,
   GENERATE_QUEUE_NAME,
+  EMAIL_QUEUE_NAME,
   SendJobData,
   GeneratePendingContactsData,
+  EmailJobData,
   enqueueContactsBulk,
   getCampaignQueue,
   getSchedulerQueue,
   getGenerateQueue,
+  getEmailQueue,
 } from './server/queue';
+import { sendMail } from './server/lib/mailer';
 import { applyPlaceholders, resolveSpintax, toWhatsappChatId } from './server/lib/messaging';
 import { isWithinSchedule, nextSendDelayMs } from './server/lib/schedule';
 import { classifyWahaError } from './server/lib/error-classifier';
@@ -447,6 +451,16 @@ async function startWorker() {
       }
     },
     { connection },
+  );
+
+  // Transactional emails worker
+  new Worker<EmailJobData>(
+    EMAIL_QUEUE_NAME,
+    async (job) => {
+      await sendMail(job.data);
+      logger.debug({ to: job.data.to, subject: job.data.subject }, '[Worker] Email sent');
+    },
+    { connection, concurrency: 4 },
   );
 
   const shutdown = async () => {

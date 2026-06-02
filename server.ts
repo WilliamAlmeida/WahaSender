@@ -20,7 +20,7 @@ import accountRoutes from './server/routes/account';
 import adminRoutes from './server/routes/admin';
 import { listPlans } from './server/lib/entitlements';
 import { requireAuth, requireAdmin } from './server/auth/middleware';
-import { getCampaignQueue, getSchedulerQueue } from './server/queue';
+import { getCampaignQueue, getSchedulerQueue, getEmailQueue } from './server/queue';
 import { pingRedis } from './server/redis';
 import db from './server/db';
 import { getMetrics, registry } from './server/lib/metrics';
@@ -119,7 +119,11 @@ async function startServer() {
     const bullBoardAdapter = new ExpressAdapter();
     bullBoardAdapter.setBasePath('/admin/queues');
     createBullBoard({
-      queues: [new BullMQAdapter(getCampaignQueue()), new BullMQAdapter(getSchedulerQueue())],
+      queues: [
+        new BullMQAdapter(getCampaignQueue()),
+        new BullMQAdapter(getSchedulerQueue()),
+        new BullMQAdapter(getEmailQueue()),
+      ],
       serverAdapter: bullBoardAdapter,
     });
     app.use('/admin/queues', requireAuth, requireAdmin, bullBoardAdapter.getRouter());

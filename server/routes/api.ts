@@ -307,26 +307,56 @@ router.post('/contacts/import', async (req, res) => {
 
     const phones = deduped.map((c) => c.phone);
     const existing = await db('contacts').where({ userId }).whereIn('phone', phones);
-    const existingMap = new Map<string, any>();
-    existing.forEach((c) => existingMap.set(c.phone, c));
+    const existingActiveMap = new Map<string, any>();
+    const existingDeletedMap = new Map<string, any>();
+    existing.forEach((c) => {
+      if (c.deletedAt) existingDeletedMap.set(c.phone, c);
+      else existingActiveMap.set(c.phone, c);
+    });
 
-    // Enforce plan contact cap on the net-new contacts being added.
-    const uniqueNew = deduped.filter((c) => !existingMap.has(c.phone)).length;
-    const limit = await checkLimit(userId, req.user!.role, 'contacts', uniqueNew);
-    if (limit) return res.status(limit.status).json({ error: limit.error });
+    // Soft-deleted contacts being restored count as net-new against the plan cap.
+    const uniqueNew = deduped.filter((c) => !existingActiveMap.has(c.phone)).length;
+
+    // Partial import: instead of rejecting the whole batch when it would exceed
+    // the plan cap, import as many net-new contacts as fit and report the rest
+    // as skipped so the UI can tell the user exactly what happened.
+    let allowedNew = uniqueNew;
+    let planLimit = -1;
+    let planName = '';
+    if (req.user!.role !== 'admin') {
+      const { plan } = await getEntitlements(userId);
+      if (plan.maxContacts >= 0) {
+        planLimit = plan.maxContacts;
+        planName = plan.name;
+        const used = await countActiveContacts(userId);
+        const remaining = Math.max(0, plan.maxContacts - used);
+        allowedNew = Math.min(uniqueNew, remaining);
+      }
+    }
 
     const toInsert: any[] = [];
     let added = 0;
     for (const c of deduped) {
-      const ex = existingMap.get(c.phone);
+      const ex = existingActiveMap.get(c.phone);
+      const deleted = existingDeletedMap.get(c.phone);
       if (!ex) {
-        toInsert.push({
-          id: crypto.randomUUID(),
-          name: c.name,
-          phone: c.phone,
-          blacklisted: c.blacklisted,
-          userId,
-        });
+        if (added >= allowedNew) continue; // plan cap reached — skip remaining net-new
+        if (deleted) {
+          // Restore soft-deleted contact instead of inserting a duplicate row
+          // eslint-disable-next-line no-await-in-loop
+          await db('contacts').where({ id: deleted.id }).update({
+            deletedAt: null,
+            ...(c.name != null ? { name: c.name } : {}),
+          });
+        } else {
+          toInsert.push({
+            id: crypto.randomUUID(),
+            name: c.name,
+            phone: c.phone,
+            blacklisted: c.blacklisted,
+            userId,
+          });
+        }
         added++;
       } else if (c.name != null && c.name !== ex.name) {
         // eslint-disable-next-line no-await-in-loop
@@ -334,7 +364,16 @@ router.post('/contacts/import', async (req, res) => {
       }
     }
     if (toInsert.length > 0) await db.batchInsert('contacts', toInsert, 100);
-    res.json({ success: true, count: added });
+
+    const skipped = uniqueNew - added;
+    res.json({
+      success: true,
+      count: added,
+      skipped,
+      limitReached: skipped > 0,
+      limit: planLimit,
+      planName,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -443,6 +482,20 @@ router.delete('/contacts/:id', async (req, res) => {
     await db('contacts').where({ id: contact.id }).update({ deletedAt: new Date() });
     await audit({ userId, action: 'delete', entityType: 'contact', entityId: contact.id, ip: req.ip });
     res.json({ status: 'success' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/contacts', async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const deleted = await db('contacts')
+      .where({ userId })
+      .whereNull('deletedAt')
+      .update({ deletedAt: new Date() });
+    await audit({ userId, action: 'delete-all', entityType: 'contact', entityId: null, ip: req.ip });
+    res.json({ status: 'success', deleted });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

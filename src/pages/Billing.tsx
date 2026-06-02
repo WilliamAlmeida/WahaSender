@@ -84,7 +84,7 @@ export default function Billing() {
   const pct = quota < 0 ? 0 : Math.min(100, Math.round((used / Math.max(1, quota)) * 100));
 
   return (
-    <div className="max-w-5xl space-y-8">
+    <div className="mx-auto max-w-5xl space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Plano e cobrança</h1>
         <p className="text-sm text-slate-500">Gerencie sua assinatura e acompanhe o uso do mês.</p>
