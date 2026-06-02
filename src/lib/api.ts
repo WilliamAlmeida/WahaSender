@@ -225,7 +225,7 @@ export const adminListUsers = async (params: { search?: string; status?: string 
   (await api.get('/admin/users', { params })).data;
 export const adminCreateUser = async (data: { email: string; name?: string; password: string; role: string; planSlug?: string }) =>
   (await api.post('/admin/users', data)).data;
-export const adminUpdateUser = async (id: string, patch: { name?: string; email?: string; role?: string }) =>
+export const adminUpdateUser = async (id: string, patch: { name?: string; email?: string; role?: string; emailVerified?: boolean }) =>
   (await api.patch(`/admin/users/${id}`, patch)).data;
 export const adminDeleteUser = async (id: string) =>
   (await api.delete(`/admin/users/${id}`)).data;

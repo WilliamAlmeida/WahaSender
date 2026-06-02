@@ -111,10 +111,11 @@ const updateUserSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   email: z.string().email().optional(),
   role: z.enum(['user', 'admin']).optional(),
+  emailVerified: z.boolean().optional(),
 });
 router.patch('/users/:id', async (req, res) => {
   try {
-    const { name, email, role } = updateUserSchema.parse(req.body);
+    const { name, email, role, emailVerified } = updateUserSchema.parse(req.body);
     const target = await db('users').where({ id: req.params.id }).first();
     if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
 
@@ -131,6 +132,10 @@ router.patch('/users/:id', async (req, res) => {
         updates.email = normalized;
         updates.emailVerifiedAt = null;
       }
+    }
+    // Explicit verification toggle wins over the email-change reset above.
+    if (emailVerified !== undefined) {
+      updates.emailVerifiedAt = emailVerified ? (target.emailVerifiedAt || new Date()) : null;
     }
 
     if (Object.keys(updates).length > 0) {

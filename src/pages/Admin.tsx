@@ -177,12 +177,13 @@ function CreateUserModal({ plans, onClose, onCreated }: { plans: any[]; onClose:
 
 function EditUserModal({ user, onClose, onSaved }: { user: any; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({ name: user.name || '', email: user.email || '', role: user.role || 'user' });
+  const [emailVerified, setEmailVerified] = useState<boolean>(!!user.emailVerified);
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
     setSaving(true);
     try {
-      await adminUpdateUser(user.id, form);
+      await adminUpdateUser(user.id, { ...form, emailVerified });
       toast.success('Usuário atualizado!');
       onSaved();
       onClose();
@@ -208,6 +209,15 @@ function EditUserModal({ user, onClose, onSaved }: { user: any; onClose: () => v
             <option value="admin">Admin</option>
           </select>
         </Field>
+        <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={emailVerified}
+            onChange={(e) => setEmailVerified(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+          />
+          E-mail verificado
+        </label>
         <div className="flex justify-end gap-2 pt-2">
           <button className={BTN_GHOST} onClick={onClose}>Cancelar</button>
           <button className={BTN_PRIMARY} disabled={saving} onClick={submit}>
