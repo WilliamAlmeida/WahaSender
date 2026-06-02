@@ -8,11 +8,29 @@ import {
   verifyPassword,
   signToken,
   changePassword,
+  resetPassword,
+  markEmailVerified,
+  findUserByEmail,
+  findUserById,
 } from './service';
 import { cookieOptions, requireAuth } from './middleware';
 import { revokeJti } from './jwt-blocklist';
+import { createEmailToken, consumeEmailToken } from './email-tokens';
+import { sendVerificationEmail, sendPasswordResetEmail } from '../lib/mailer';
+import { assignFreePlan } from '../lib/entitlements';
 import { audit } from '../lib/audit';
 import { logger } from '../logger';
+
+const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const RESET_TTL_MS = 60 * 60 * 1000; // 1h
+
+async function issueVerification(userId: string, email: string): Promise<void> {
+  const raw = await createEmailToken(userId, 'verify', VERIFY_TTL_MS);
+  const link = `${config.APP_PUBLIC_URL}/verificar-email?token=${raw}`;
+  await sendVerificationEmail(email, link).catch((err) =>
+    logger.warn({ err: err.message, email }, '[Auth] verification e-mail failed'),
+  );
+}
 
 const router = Router();
 
@@ -52,6 +70,112 @@ router.post('/register', async (req, res) => {
     });
     logger.info({ email: user.email, jti }, '[Auth] First admin created');
     res.json({ user, token });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Self-service signup. The first login-capable account becomes the platform
+// admin (auto-verified); subsequent tenants are 'user', get the Free plan and
+// an e-mail verification link.
+router.post('/signup', async (req, res) => {
+  try {
+    const loginCapable = await countLoginCapableUsers();
+    const isBootstrap = loginCapable === 0;
+    if (!isBootstrap && !config.ENABLE_SIGNUP) {
+      return res.status(403).json({ error: 'Cadastro desabilitado' });
+    }
+    const data = credentialsSchema.parse(req.body);
+    const role = isBootstrap ? 'admin' : 'user';
+    const user = await createUser({ ...data, role });
+
+    if (isBootstrap) {
+      await markEmailVerified(user.id);
+    } else {
+      await assignFreePlan(user.id);
+      await issueVerification(user.id, user.email);
+    }
+
+    const { token, jti } = signToken(user);
+    res.cookie(config.COOKIE_NAME, token, cookieOptions());
+    await audit({
+      userId: user.id,
+      action: 'register',
+      entityType: 'user',
+      entityId: user.id,
+      metadata: { role, isBootstrap },
+      ip: req.ip,
+      userAgent: req.get('user-agent') || null,
+    });
+    logger.info({ email: user.email, jti, role }, '[Auth] Account created');
+    res.json({ user: { ...user, emailVerified: isBootstrap }, token });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+const verifySchema = z.object({ token: z.string().min(10) });
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { token } = verifySchema.parse(req.body);
+    const result = await consumeEmailToken(token, 'verify');
+    if (!result) return res.status(400).json({ error: 'Token inválido ou expirado' });
+    await markEmailVerified(result.userId);
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/resend-verification', requireAuth, async (req, res) => {
+  const user = req.user!;
+  if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
+  await issueVerification(user.id, user.email);
+  res.json({ ok: true });
+});
+
+const emailSchema = z.object({ email: z.string().email() });
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = emailSchema.parse(req.body);
+    const row = await findUserByEmail(email);
+    // Always return ok to avoid leaking which e-mails are registered.
+    if (row && !row.claimable) {
+      const raw = await createEmailToken(row.id, 'reset', RESET_TTL_MS);
+      const link = `${config.APP_PUBLIC_URL}/redefinir-senha?token=${raw}`;
+      await sendPasswordResetEmail(row.email, link).catch((err) =>
+        logger.warn({ err: err.message }, '[Auth] reset e-mail failed'),
+      );
+    }
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+const resetSchema = z.object({ token: z.string().min(10), newPassword: z.string().min(1).max(256) });
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = resetSchema.parse(req.body);
+    const result = await consumeEmailToken(token, 'reset');
+    if (!result) return res.status(400).json({ error: 'Token inválido ou expirado' });
+    await resetPassword(result.userId, newPassword);
+    const user = await findUserById(result.userId);
+    await audit({
+      userId: result.userId,
+      action: 'password-change',
+      entityType: 'user',
+      entityId: result.userId,
+      metadata: { via: 'reset' },
+      ip: req.ip,
+      userAgent: req.get('user-agent') || null,
+    });
+    logger.info({ email: user?.email }, '[Auth] Password reset completed');
+    res.json({ ok: true });
   } catch (err: any) {
     if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
     res.status(400).json({ error: err.message });

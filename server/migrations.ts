@@ -365,6 +365,153 @@ export async function runMigrations(): Promise<void> {
     logger.info('[Migrations] Created table "outbound_webhooks"');
   }
 
+  // ---------------------------------------------------------------------------
+  // v3.0 — SaaS: self-service accounts, plans, subscriptions, usage & billing
+  // ---------------------------------------------------------------------------
+
+  // Account lifecycle columns
+  await ensureColumn('users', 'emailVerifiedAt', (t) => {
+    t.timestamp('emailVerifiedAt').nullable();
+  });
+  await ensureColumn('users', 'status', (t) => {
+    t.string('status').defaultTo('active'); // active | suspended
+  });
+
+  // Single-use tokens for e-mail verification and password reset.
+  if (!(await db.schema.hasTable('email_tokens'))) {
+    await db.schema.createTable('email_tokens', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('type').notNullable(); // verify | reset
+      table.string('tokenHash').notNullable().unique();
+      table.timestamp('expiresAt').notNullable();
+      table.timestamp('usedAt').nullable();
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.index(['userId', 'type']);
+    });
+    logger.info('[Migrations] Created table "email_tokens"');
+  }
+
+  // Catalog of subscription plans (limits + price). Seeded below if empty.
+  if (!(await db.schema.hasTable('plans'))) {
+    await db.schema.createTable('plans', (table) => {
+      table.string('id').primary();
+      table.string('slug').notNullable().unique();
+      table.string('name').notNullable();
+      table.integer('priceCents').notNullable().defaultTo(0);
+      table.string('currency').notNullable().defaultTo('BRL');
+      table.integer('monthlyMessageQuota').notNullable().defaultTo(0); // -1 = unlimited
+      table.integer('maxContacts').notNullable().defaultTo(0); // -1 = unlimited
+      table.integer('maxSessions').notNullable().defaultTo(1);
+      table.integer('maxCampaigns').notNullable().defaultTo(0); // -1 = unlimited
+      table.text('features').defaultTo('[]');
+      table.string('mpPlanId').nullable();
+      table.boolean('active').defaultTo(true);
+      table.integer('sortOrder').defaultTo(0);
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+    });
+    logger.info('[Migrations] Created table "plans"');
+  }
+
+  // One active subscription per user links them to a plan.
+  if (!(await db.schema.hasTable('subscriptions'))) {
+    await db.schema.createTable('subscriptions', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('planId').notNullable().references('id').inTable('plans');
+      table.string('status').notNullable().defaultTo('active'); // trialing|active|past_due|canceled
+      table.string('provider').nullable(); // mercadopago
+      table.string('providerSubscriptionId').nullable();
+      table.timestamp('currentPeriodStart').nullable();
+      table.timestamp('currentPeriodEnd').nullable();
+      table.boolean('cancelAtPeriodEnd').defaultTo(false);
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.timestamp('updatedAt').defaultTo(db.fn.now());
+      table.index(['userId']);
+      table.index(['status']);
+    });
+    logger.info('[Migrations] Created table "subscriptions"');
+  }
+
+  // Monthly usage counters per tenant (period = YYYY-MM).
+  if (!(await db.schema.hasTable('usage_counters'))) {
+    await db.schema.createTable('usage_counters', (table) => {
+      table.increments('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('period').notNullable(); // YYYY-MM
+      table.integer('messagesSent').notNullable().defaultTo(0);
+      table.timestamp('updatedAt').defaultTo(db.fn.now());
+      table.unique(['userId', 'period']);
+      table.index(['userId']);
+    });
+    logger.info('[Migrations] Created table "usage_counters"');
+  }
+
+  // Payment / invoice records produced by the billing provider.
+  if (!(await db.schema.hasTable('payments'))) {
+    await db.schema.createTable('payments', (table) => {
+      table.string('id').primary();
+      table.string('userId').notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.string('subscriptionId').nullable();
+      table.string('provider').notNullable();
+      table.string('providerPaymentId').nullable();
+      table.integer('amountCents').notNullable().defaultTo(0);
+      table.string('currency').notNullable().defaultTo('BRL');
+      table.string('method').nullable(); // pix | boleto | card
+      table.string('status').notNullable(); // pending|approved|rejected|refunded
+      table.timestamp('paidAt').nullable();
+      table.timestamp('createdAt').defaultTo(db.fn.now());
+      table.index(['userId']);
+    });
+    logger.info('[Migrations] Created table "payments"');
+  }
+
+  // Idempotency log for provider webhook notifications.
+  if (!(await db.schema.hasTable('billing_events'))) {
+    await db.schema.createTable('billing_events', (table) => {
+      table.increments('id').primary();
+      table.string('provider').notNullable();
+      table.string('externalId').notNullable();
+      table.text('payload').nullable();
+      table.timestamp('processedAt').defaultTo(db.fn.now());
+      table.unique(['provider', 'externalId']);
+    });
+    logger.info('[Migrations] Created table "billing_events"');
+  }
+
+  // Seed the default plan catalog once (idempotent: only when table is empty).
+  const planCount = await db('plans').count({ c: '*' }).first();
+  if (Number(planCount?.c || 0) === 0) {
+    const now = new Date();
+    await db('plans').insert([
+      {
+        id: crypto.randomUUID(), slug: 'free', name: 'Free', priceCents: 0, currency: 'BRL',
+        monthlyMessageQuota: 100, maxContacts: 200, maxSessions: 1, maxCampaigns: 2,
+        features: JSON.stringify(['100 mensagens/mês', '1 instância WAHA', 'Suporte comunitário']),
+        active: true, sortOrder: 0, createdAt: now,
+      },
+      {
+        id: crypto.randomUUID(), slug: 'starter', name: 'Starter', priceCents: 4900, currency: 'BRL',
+        monthlyMessageQuota: 2000, maxContacts: 5000, maxSessions: 1, maxCampaigns: 10,
+        features: JSON.stringify(['2.000 mensagens/mês', '1 instância WAHA', 'Templates e webhooks', 'Suporte por e-mail']),
+        active: true, sortOrder: 1, createdAt: now,
+      },
+      {
+        id: crypto.randomUUID(), slug: 'pro', name: 'Pro', priceCents: 9900, currency: 'BRL',
+        monthlyMessageQuota: 10000, maxContacts: 25000, maxSessions: 3, maxCampaigns: 50,
+        features: JSON.stringify(['10.000 mensagens/mês', '3 instâncias WAHA', 'Tokens de API', 'Suporte prioritário']),
+        active: true, sortOrder: 2, createdAt: now,
+      },
+      {
+        id: crypto.randomUUID(), slug: 'business', name: 'Business', priceCents: 19900, currency: 'BRL',
+        monthlyMessageQuota: 50000, maxContacts: -1, maxSessions: 10, maxCampaigns: -1,
+        features: JSON.stringify(['50.000 mensagens/mês', '10 instâncias WAHA', 'Campanhas ilimitadas', 'Suporte dedicado']),
+        active: true, sortOrder: 3, createdAt: now,
+      },
+    ]);
+    logger.info('[Migrations] Seeded default plan catalog (free/starter/pro/business)');
+  }
+
   logger.info('[Migrations] Migrations complete');
 }
 

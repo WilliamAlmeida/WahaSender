@@ -14,6 +14,11 @@ import { runMigrations } from './server/migrations';
 import { migrateLegacyJsonData } from './server/migration-helper';
 import authRoutes from './server/auth/routes';
 import apiRoutes, { webhookRouter } from './server/routes/api';
+import billingRoutes from './server/routes/billing';
+import billingWebhookRoutes from './server/billing/webhook';
+import accountRoutes from './server/routes/account';
+import adminRoutes from './server/routes/admin';
+import { listPlans } from './server/lib/entitlements';
 import { requireAuth, requireAdmin } from './server/auth/middleware';
 import { getCampaignQueue, getSchedulerQueue } from './server/queue';
 import { pingRedis } from './server/redis';
@@ -120,11 +125,24 @@ async function startServer() {
     app.use('/admin/queues', requireAuth, requireAdmin, bullBoardAdapter.getRouter());
   }
 
+  // Public pricing (used by the logged-out landing page)
+  app.get('/api/public/plans', async (_req, res) => {
+    res.json(await listPlans());
+  });
+
   // Webhook (no JWT, has its own shared-secret + optional HMAC check)
   app.use('/api', webhookRouter);
 
+  // Billing provider webhook (no JWT, validates provider signature)
+  app.use('/api/billing/webhook', billingWebhookRoutes);
+
   // Auth routes
   app.use('/api/auth', authLimiter, authRoutes);
+
+  // Billing, account (LGPD) and platform admin (auth enforced inside routers)
+  app.use('/api/billing', apiLimiter, billingRoutes);
+  app.use('/api/account', apiLimiter, accountRoutes);
+  app.use('/api/admin', apiLimiter, adminRoutes);
 
   // Protected API routes
   app.use('/api', apiLimiter, apiRoutes);

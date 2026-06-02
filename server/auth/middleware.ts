@@ -47,6 +47,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       }
       const user = await findUserById(row.userId);
       if (!user) return res.status(401).json({ error: 'User not found' });
+      if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended' });
       req.user = user;
       req.authMethod = 'api-token';
       // best-effort lastUsedAt
@@ -67,6 +68,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   const user = await findUserById(decoded.sub);
   if (!user) return res.status(401).json({ error: 'User not found' });
+  if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended' });
   req.user = user;
   req.authMethod = 'jwt';
   req.jti = decoded.jti;
@@ -79,6 +81,17 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
     return res.status(403).json({ error: 'Admin only' });
   }
   next();
+}
+
+/**
+ * Guards actions that require a verified e-mail when
+ * REQUIRE_EMAIL_VERIFICATION is enabled. Admins and API-token clients bypass.
+ */
+export function requireVerifiedEmail(req: Request, res: Response, next: NextFunction) {
+  if (!config.REQUIRE_EMAIL_VERIFICATION) return next();
+  if (req.authMethod === 'api-token') return next();
+  if (req.user && (req.user.emailVerified || req.user.role === 'admin')) return next();
+  return res.status(403).json({ error: 'E-mail não verificado', code: 'email_unverified' });
 }
 
 /** For webhooks etc — checks a static shared secret instead of JWT. */
