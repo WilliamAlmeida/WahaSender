@@ -129,8 +129,8 @@ export const sendTestMessage = async (session: string, phone: string, text: stri
   return data;
 };
 
-export const getQueue = async (): Promise<any[]> => {
-  const { data } = await api.get('/queue');
+export const getQueue = async (params?: { page?: number; campaign?: string; status?: string }): Promise<any> => {
+  const { data } = await api.get('/queue', { params });
   return data;
 };
 
@@ -140,6 +140,11 @@ export const deleteQueueItem = async (campaignId: string, index: number): Promis
 
 export const toggleQueueItem = async (campaignId: string, index: number): Promise<any> => {
   const { data } = await api.post(`/campaigns/${campaignId}/queue/${index}/toggle`);
+  return data;
+};
+
+export const cleanupCancelledQueue = async (): Promise<{ deleted: number }> => {
+  const { data } = await api.post('/queue/cleanup-cancelled');
   return data;
 };
 
@@ -179,6 +184,9 @@ export const commitCsv = async (file: File, mapping?: Record<string, string>) =>
   return data;
 };
 
+export const updateProfile = async (data: { name?: string; email?: string }) =>
+  (await api.patch('/auth/profile', data)).data as { user: any };
+
 export const changePassword = async (oldPassword: string, newPassword: string) =>
   (await api.post('/auth/change-password', { oldPassword, newPassword })).data;
 
@@ -208,12 +216,23 @@ export const deleteAccount = async () => (await api.post('/account/delete', { co
 
 // === Platform admin ===
 export const adminStats = async () => (await api.get('/admin/stats')).data;
-export const adminListUsers = async (search = '') =>
-  (await api.get('/admin/users', { params: search ? { search } : {} })).data;
+export const adminListUsers = async (params: { search?: string; status?: string } = {}) =>
+  (await api.get('/admin/users', { params })).data;
+export const adminCreateUser = async (data: { email: string; name?: string; password: string; role: string; planSlug?: string }) =>
+  (await api.post('/admin/users', data)).data;
+export const adminUpdateUser = async (id: string, patch: { name?: string; email?: string; role?: string }) =>
+  (await api.patch(`/admin/users/${id}`, patch)).data;
+export const adminDeleteUser = async (id: string) =>
+  (await api.delete(`/admin/users/${id}`)).data;
 export const adminSetUserStatus = async (id: string, status: 'active' | 'suspended') =>
   (await api.post(`/admin/users/${id}/status`, { status })).data;
 export const adminSetUserPlan = async (id: string, planSlug: string) =>
   (await api.post(`/admin/users/${id}/plan`, { planSlug })).data;
 export const adminListPlans = async () => (await api.get('/admin/plans')).data;
+export const adminCreatePlan = async (data: any) => (await api.post('/admin/plans', data)).data;
 export const adminUpdatePlan = async (id: string, patch: any) =>
   (await api.put(`/admin/plans/${id}`, patch)).data;
+export const adminListPayments = async (params: { status?: string; userId?: string; limit?: number; offset?: number } = {}) =>
+  (await api.get('/admin/payments', { params })).data;
+export const adminListAudit = async (params: { userId?: string; action?: string; entityType?: string; limit?: number; offset?: number } = {}) =>
+  (await api.get('/admin/audit', { params })).data;

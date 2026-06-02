@@ -36,8 +36,8 @@ export interface Campaign {
   groupId: string;
   groupName: string;
   sessions: string[];
-  startTime: string;
-  endTime: string;
+  startTime: string | null;
+  endTime: string | null;
   schedules?: DaySchedule[];
   intervalMin: number;
   intervalMax: number;
@@ -50,4 +50,5 @@ export interface Campaign {
   logs: string[];
   createdAt: string;
   nextSendTime?: string;
+  generatingPendingContacts?: boolean;
 }

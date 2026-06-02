@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { getCampaigns, createCampaign, updateCampaign, getGroups, getWahaSessions, toggleCampaign, deleteCampaign } from '../lib/api';
+import { getCampaigns, createCampaign, updateCampaign, getGroups, getWahaSessions, toggleCampaign, deleteCampaign, listTemplates, createTemplate } from '../lib/api';
 import { Campaign, Group, WahaSession, DaySchedule } from '../types';
-import { PlayCircle, PauseCircle, Plus, Trash2, CheckCircle2, Clock, Users, X, RefreshCw, Edit2, Eye, Copy, Calculator, ListTodo } from 'lucide-react';
+import { PlayCircle, PauseCircle, Plus, Trash2, CheckCircle2, Clock, Users, X, RefreshCw, Edit2, Eye, Copy, Calculator, ListTodo, BookmarkPlus } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { Modal } from '../components/Modal';
 import { Link } from 'react-router-dom';
@@ -46,17 +47,33 @@ export default function Campaigns() {
   const [statsData, setStatsData] = useState<any>(null);
 
   const [statusFilter, setStatusFilter] = useState('All');
+  const [savedTemplates, setSavedTemplates] = useState<{ id: string; name: string; body: string }[]>([]);
+  const [savingAsTemplate, setSavingAsTemplate] = useState<{ idx: number; name: string } | null>(null);
 
   const fetchData = async () => {
     try {
-      const [camps, grps, sess] = await Promise.all([getCampaigns(), getGroups(), getWahaSessions()]);
+      const [camps, grps, sess, tmpl] = await Promise.all([getCampaigns(), getGroups(), getWahaSessions(), listTemplates()]);
       setCampaigns(camps);
       setGroups(grps);
       setSessions(sess);
+      setSavedTemplates(tmpl);
     } catch (e) {
       console.error(e);
     }
     setLoading(false);
+  };
+
+  const handleSaveAsTemplate = async (idx: number, name: string) => {
+    const body = templates[idx];
+    if (!body.trim() || !name.trim()) return;
+    try {
+      await createTemplate({ name, body });
+      toast.success('Template salvo!');
+      setSavedTemplates(await listTemplates());
+      setSavingAsTemplate(null);
+    } catch {
+      /* toast handled by interceptor */
+    }
   };
 
   const refreshGroups = async () => {
@@ -137,13 +154,19 @@ export default function Campaigns() {
     }
   };
 
+  const formatDateTimeForInput = (value: any): string => {
+    if (!value) return '';
+    const str = value instanceof Date ? value.toISOString() : String(value);
+    return str.substring(0, 16);
+  };
+
   const handleEditClick = (campaign: Campaign, view: boolean = false) => {
     setEditId(campaign.id);
     setName(campaign.name);
     setGroupId(campaign.groupId);
     setSelectedSessions(campaign.sessions || []);
-    setStartTime(campaign.startTime ? campaign.startTime.substring(0, 16) : '');
-    setEndTime(campaign.endTime ? campaign.endTime.substring(0, 16) : '');
+    setStartTime(formatDateTimeForInput(campaign.startTime));
+    setEndTime(formatDateTimeForInput(campaign.endTime));
     setSchedules(campaign.schedules || []);
     setIntervalMin(campaign.intervalMin.toString());
     setIntervalMax(campaign.intervalMax.toString());
@@ -251,6 +274,15 @@ export default function Campaigns() {
     }
   };
 
+  const formatDuration = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (h === 0 && m === 0) return '< 1 min';
+    if (h === 0) return `${m} min`;
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}min`;
+  };
+
   const calculateStats = () => {
     if (!groupId) {
       setAlertMsg('Selecione um grupo para calcular as estatísticas.');
@@ -260,19 +292,108 @@ export default function Campaigns() {
     if (!group) return;
 
     const totalContacts = group.count;
-    const sessionCount = selectedSessions.length || 1; // if 0, assume 1 as fallback config
+    const sessionCount = selectedSessions.length || 1;
     const msgsPerSession = Math.ceil(totalContacts / sessionCount);
     const avgIntervalSec = (parseInt(intervalMin) + parseInt(intervalMax)) / 2;
-    
-    // total approx time = (messages per session * avg interval) 
-    const totalTimeSec = msgsPerSession * avgIntervalSec;
-    const totalMins = Math.floor(totalTimeSec / 60);
-    const totalHours = Math.floor(totalMins / 60);
-    
-    let timeStr = '';
-    if (totalHours > 0) timeStr += `${totalHours} horas `;
-    if (totalMins % 60 > 0) timeStr += `${totalMins % 60} minutos`;
-    if (timeStr === '') timeStr = '< 1 minuto';
+
+    // Time needed if running without any schedule gaps (pure dispatch time)
+    const effectiveWorkSec = msgsPerSession * avgIntervalSec;
+
+    // --- Schedule analysis ---
+    interface ScheduleStats {
+      weeklyAvailableSec: number;
+      daysPerWeek: number;
+      avgDailySec: number;
+      activeDaysNeeded: number;
+      calendarDaysNeeded: number;
+      estimatedEndDate: Date | null;
+      scheduleSummary: string;
+      dayBreakdown: { label: string; totalSec: number }[];
+    }
+    let scheduleStats: ScheduleStats | null = null;
+
+    if (schedules.length > 0) {
+      const DAY_NAMES_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+      let weeklyAvailableSec = 0;
+      const activeDaySet = new Set<number>();
+      const dayBreakdown: { label: string; totalSec: number }[] = [];
+
+      for (const ds of schedules) {
+        activeDaySet.add(ds.dayOfWeek);
+        let daySec = 0;
+        for (const slot of ds.slots) {
+          const [sh, sm] = slot.start.split(':').map(Number);
+          const [eh, em] = slot.end.split(':').map(Number);
+          const dur = ((eh * 60 + em) - (sh * 60 + sm)) * 60;
+          if (dur > 0) daySec += dur;
+        }
+        weeklyAvailableSec += daySec;
+        dayBreakdown.push({ label: DAY_NAMES_SHORT[ds.dayOfWeek] ?? `Dia ${ds.dayOfWeek}`, totalSec: daySec });
+      }
+
+      const daysPerWeek = activeDaySet.size;
+      const avgDailySec = daysPerWeek > 0 ? weeklyAvailableSec / daysPerWeek : 0;
+      const activeDaysNeeded = avgDailySec > 0 ? Math.ceil(effectiveWorkSec / avgDailySec) : 0;
+      // Spread active days across real calendar weeks
+      const calendarDaysNeeded = daysPerWeek > 0 ? Math.ceil(activeDaysNeeded * (7 / daysPerWeek)) : 0;
+
+      // Simulate day-by-day to find estimated end date
+      let estimatedEndDate: Date | null = null;
+      const startDate = startTime ? new Date(startTime) : new Date();
+      if (!isNaN(startDate.getTime())) {
+        let remaining = effectiveWorkSec;
+        const cursor = new Date(startDate);
+        for (let i = 0; i < 730 && remaining > 0; i++) {
+          const dow = cursor.getDay();
+          const dayScheds = schedules.filter(ds => ds.dayOfWeek === dow);
+          let availableToday = 0;
+          for (const ds of dayScheds) {
+            for (const slot of ds.slots) {
+              const [sh, sm] = slot.start.split(':').map(Number);
+              const [eh, em] = slot.end.split(':').map(Number);
+              // On the first day: only count slots starting at or after the start time
+              if (i === 0) {
+                const curMin = cursor.getHours() * 60 + cursor.getMinutes();
+                const slotEndMin = eh * 60 + em;
+                const effectiveStartMin = Math.max(sh * 60 + sm, curMin);
+                const dur = (slotEndMin - effectiveStartMin) * 60;
+                if (dur > 0) availableToday += dur;
+              } else {
+                const dur = ((eh * 60 + em) - (sh * 60 + sm)) * 60;
+                if (dur > 0) availableToday += dur;
+              }
+            }
+          }
+          remaining -= availableToday;
+          if (remaining <= 0) estimatedEndDate = new Date(cursor);
+          cursor.setDate(cursor.getDate() + 1);
+        }
+        if (!estimatedEndDate) estimatedEndDate = cursor;
+      }
+
+      const activeDayLabels = [...activeDaySet].sort().map(d => DAY_NAMES_SHORT[d]).join(', ');
+      const scheduleSummary = `${daysPerWeek} dia(s)/semana (${activeDayLabels}) • ${formatDuration(avgDailySec)}/dia • ${formatDuration(weeklyAvailableSec)}/semana disponíveis`;
+
+      scheduleStats = { weeklyAvailableSec, daysPerWeek, avgDailySec, activeDaysNeeded, calendarDaysNeeded, estimatedEndDate, scheduleSummary, dayBreakdown };
+    }
+
+    // Calendar time description
+    let calendarTimeStr = '';
+    if (scheduleStats) {
+      const { calendarDaysNeeded, estimatedEndDate } = scheduleStats;
+      if (calendarDaysNeeded <= 1) {
+        calendarTimeStr = 'Hoje (dentro dos horários configurados)';
+      } else if (calendarDaysNeeded <= 7) {
+        calendarTimeStr = `~${calendarDaysNeeded} dias corridos`;
+      } else {
+        const weeks = Math.ceil(calendarDaysNeeded / 7);
+        calendarTimeStr = `~${weeks} sem. (~${calendarDaysNeeded} dias)`;
+      }
+      if (estimatedEndDate) {
+        const fmt = estimatedEndDate.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        calendarTimeStr += ` • previsão: ${fmt}`;
+      }
+    }
 
     let risk = 'Baixo';
     let riskColor = 'text-green-600';
@@ -286,11 +407,14 @@ export default function Campaigns() {
 
     setStatsData({
       messagesPerSession: selectedSessions.length > 0 ? msgsPerSession : 0,
-      totalTime: timeStr,
+      effectiveWorkTime: formatDuration(effectiveWorkSec),
+      calendarTime: calendarTimeStr,
       risk,
       riskColor,
       totalContacts,
       sessionCount,
+      avgIntervalSec,
+      scheduleStats,
     });
     setShowStats(true);
   };
@@ -465,12 +589,38 @@ export default function Campaigns() {
             </div>
 
             <div>
-              <div className="flex justify-between items-center mb-3">
+              <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
                 <label className="block text-[11px] uppercase font-black text-slate-400">Templates de Mensagem</label>
                 {!isViewOnly && (
-                  <button type="button" onClick={addTemplate} className="text-[10px] text-indigo-600 font-bold underline hover:text-indigo-800">
-                    + Adicionar Variação (A/B)
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {savedTemplates.length > 0 && (
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          const tpl = savedTemplates.find(t => t.id === e.target.value);
+                          if (tpl) {
+                            const firstEmpty = templates.findIndex(t => !t.trim());
+                            if (firstEmpty >= 0) {
+                              handleTemplateChange(firstEmpty, tpl.body);
+                            } else {
+                              setTemplates(prev => [...prev, tpl.body]);
+                            }
+                          }
+                          e.target.value = '';
+                        }}
+                        className="text-[10px] px-2 py-1.5 bg-white border border-slate-200 rounded-md text-slate-600 font-medium focus:ring-indigo-500 focus:border-indigo-500"
+                      >
+                        <option value="">+ Importar template salvo...</option>
+                        {savedTemplates.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                    )}
+                    <button type="button" onClick={addTemplate} className="text-[10px] text-indigo-600 font-bold underline hover:text-indigo-800">
+                      + Adicionar Variação (A/B)
+                    </button>
+                  </div>
                 )}
               </div>
               <p className="text-[10px] text-slate-500 italic mb-3">
@@ -481,19 +631,28 @@ export default function Campaigns() {
                 {templates.map((tpl, i) => (
                   <div key={i} className="flex flex-col gap-2">
                     <div className="flex gap-2 items-start">
-                      <textarea 
+                      <textarea
                         id={`template-edit-${i}`}
                         disabled={isViewOnly}
-                        rows={3} 
-                        placeholder="Olá {{name}}, temos uma novidade..." 
-                        value={tpl} 
-                        onChange={e => handleTemplateChange(i, e.target.value)} 
+                        rows={3}
+                        placeholder="Olá {{name}}, temos uma novidade..."
+                        value={tpl}
+                        onChange={e => handleTemplateChange(i, e.target.value)}
                         className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg text-sm font-sans resize-y focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-75 disabled:bg-slate-100"
                       />
-                      {templates.length > 1 && !isViewOnly && (
-                        <button type="button" onClick={() => removeTemplate(i)} className="text-slate-400 hover:text-red-600 p-2 bg-slate-50 hover:bg-red-50 rounded-lg border border-slate-200 hover:border-red-200 transition-colors">
-                          <Trash2 className="w-5 h-5"/>
-                        </button>
+                      {!isViewOnly && (
+                        <div className="flex flex-col gap-1">
+                          {templates.length > 1 && (
+                            <button type="button" onClick={() => removeTemplate(i)} className="text-slate-400 hover:text-red-600 p-2 bg-slate-50 hover:bg-red-50 rounded-lg border border-slate-200 hover:border-red-200 transition-colors" title="Remover variação">
+                              <Trash2 className="w-5 h-5"/>
+                            </button>
+                          )}
+                          {tpl.trim() && (
+                            <button type="button" onClick={() => setSavingAsTemplate({ idx: i, name: '' })} className="text-slate-400 hover:text-emerald-600 p-2 bg-slate-50 hover:bg-emerald-50 rounded-lg border border-slate-200 hover:border-emerald-200 transition-colors" title="Salvar como template">
+                              <BookmarkPlus className="w-5 h-5"/>
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                     {!isViewOnly && (
@@ -555,10 +714,15 @@ export default function Campaigns() {
                       <div className="flex items-center gap-3 mb-1">
                         <h3 className="text-lg font-bold text-slate-900 tracking-tight">{camp.name}</h3>
                         <span className={`text-[10px] px-2 py-0.5 rounded border font-bold uppercase tracking-wider ${statusColor(camp.status)}`}>{camp.status}</span>
+                        {camp.generatingPendingContacts && (
+                          <span className="text-[10px] px-2 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700 font-bold uppercase tracking-wider animate-pulse flex items-center gap-1.5">
+                            <RefreshCw className="w-3 h-3"/> Gerando Fila
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-4 text-xs font-medium text-slate-500 mt-2">
                         <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5"/> Grupo: {camp.groupName}</span>
-                        <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5"/> Início: {format(new Date(camp.startTime), 'dd/MM HH:mm')}</span>
+                        <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5"/> Início: {camp.startTime ? format(new Date(camp.startTime), 'dd/MM HH:mm') : '—'}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -725,33 +889,117 @@ export default function Campaigns() {
          </div>
       </Modal>
 
+      <Modal isOpen={savingAsTemplate !== null} onClose={() => setSavingAsTemplate(null)} title="Salvar como Template">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-[11px] uppercase font-black text-slate-400 mb-1.5">Nome do template</label>
+            <input
+              type="text"
+              autoFocus
+              placeholder="Ex: Boas-vindas Black Friday"
+              value={savingAsTemplate?.name || ''}
+              onChange={(e) => setSavingAsTemplate(prev => prev ? { ...prev, name: e.target.value } : null)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && savingAsTemplate) handleSaveAsTemplate(savingAsTemplate.idx, savingAsTemplate.name); }}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-indigo-500 focus:border-indigo-500"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setSavingAsTemplate(null)} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-sm transition-colors">
+              Cancelar
+            </button>
+            <button
+              onClick={() => savingAsTemplate && handleSaveAsTemplate(savingAsTemplate.idx, savingAsTemplate.name)}
+              disabled={!savingAsTemplate?.name.trim()}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg text-sm transition-colors"
+            >
+              Salvar template
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal isOpen={showStats} onClose={() => setShowStats(false)} title="Estatísticas da Campanha">
         <div className="mb-6 space-y-4">
-          <p className="text-sm text-slate-600 border-b pb-4">
-            Com base nas suas configurações atuais:
-          </p>
+          <p className="text-sm text-slate-500 border-b pb-3">Com base nas suas configurações atuais:</p>
           {statsData ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Total de Contatos</span>
-                <span className="text-lg font-black text-slate-800">{statsData.totalContacts}</span>
+            <div className="space-y-4">
+              {/* Base metrics */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Contatos</span>
+                  <span className="text-lg font-black text-slate-800">{statsData.totalContacts}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Instâncias</span>
+                  <span className="text-lg font-black text-slate-800">{statsData.sessionCount}</span>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Msg/Instância</span>
+                  <span className="text-lg font-black text-slate-800">~{statsData.messagesPerSession}</span>
+                </div>
               </div>
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Instâncias Ativas</span>
-                <span className="text-lg font-black text-slate-800">{statsData.sessionCount}</span>
+
+              {/* Timing */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                  <span className="block text-[10px] text-indigo-400 font-bold uppercase tracking-wider mb-1">Tempo de Disparo Puro</span>
+                  <span className="text-lg font-black text-indigo-700">{statsData.effectiveWorkTime}</span>
+                  <p className="text-[10px] text-indigo-400 mt-0.5">Tempo contínuo sem pausas</p>
+                </div>
+                {statsData.scheduleStats ? (
+                  <div className="bg-emerald-50 p-3 rounded-lg border border-emerald-100">
+                    <span className="block text-[10px] text-emerald-500 font-bold uppercase tracking-wider mb-1">Duração Real (c/ horários)</span>
+                    <span className="text-sm font-black text-emerald-700 leading-tight">{statsData.calendarTime}</span>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                    <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Duração no Calendário</span>
+                    <span className="text-sm font-black text-slate-700">{statsData.effectiveWorkTime}</span>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Sem restrição de horário</p>
+                  </div>
+                )}
               </div>
+
+              {/* Schedule detail block — only when configured */}
+              {statsData.scheduleStats && (
+                <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-2">
+                  <span className="block text-[10px] text-amber-600 font-bold uppercase tracking-wider">Horários Configurados</span>
+                  <p className="text-xs text-amber-800 font-medium">{statsData.scheduleStats.scheduleSummary}</p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {statsData.scheduleStats.dayBreakdown.map((d: { label: string; totalSec: number }, i: number) => (
+                      <span key={i} className="inline-flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                        {d.label} · {formatDuration(d.totalSec)}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div>
+                      <span className="text-[10px] text-amber-500 font-bold uppercase tracking-wider">Dias ativos necessários</span>
+                      <p className="text-base font-black text-amber-800">{statsData.scheduleStats.activeDaysNeeded} dia(s)</p>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-amber-500 font-bold uppercase tracking-wider">Dias corridos estimados</span>
+                      <p className="text-base font-black text-amber-800">{statsData.scheduleStats.calendarDaysNeeded} dia(s)</p>
+                    </div>
+                  </div>
+                  {!startTime && (
+                    <p className="text-[10px] text-amber-500 italic">Configure a data de início para ver a data estimada de conclusão.</p>
+                  )}
+                </div>
+              )}
+
+              {!statsData.scheduleStats && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                  <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Horários</span>
+                  <p className="text-xs text-slate-500">Nenhum horário configurado — disparos ocorrem a qualquer momento dentro do período da campanha. Configure horários para um cálculo mais preciso.</p>
+                </div>
+              )}
+
+              {/* Risk */}
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Msg por Instância</span>
-                <span className="text-lg font-black text-slate-800">~{statsData.messagesPerSession}</span>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Tempo Total Prox.</span>
-                <span className="text-lg font-black text-indigo-700">{statsData.totalTime}</span>
-              </div>
-              <div className="col-span-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Nível de Risco de Ban</span>
-                <span className={`text-lg font-black ${statsData.riskColor}`}>{statsData.risk}</span>
-                <p className="text-xs text-slate-500 mt-1 max-w-sm">Varia de acordo com o intervalo escolhido. Menos de 30 segundos é considerado alto risco.</p>
+                <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Risco de Banimento</span>
+                <span className={`text-base font-black ${statsData.riskColor}`}>{statsData.risk}</span>
+                <p className="text-xs text-slate-500 mt-1">Intervalo médio: {statsData.avgIntervalSec}s. Abaixo de 30s = alto risco, 30–60s = médio, acima de 60s = baixo.</p>
               </div>
             </div>
           ) : (

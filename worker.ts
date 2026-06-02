@@ -8,10 +8,13 @@ import { getConnectionOptions } from './server/queue/connection';
 import {
   QUEUE_NAME,
   SCHEDULER_QUEUE_NAME,
+  GENERATE_QUEUE_NAME,
   SendJobData,
+  GeneratePendingContactsData,
   enqueueContactsBulk,
   getCampaignQueue,
   getSchedulerQueue,
+  getGenerateQueue,
 } from './server/queue';
 import { applyPlaceholders, resolveSpintax, toWhatsappChatId } from './server/lib/messaging';
 import { isWithinSchedule, nextSendDelayMs } from './server/lib/schedule';
@@ -353,6 +356,42 @@ async function startWorker() {
 
   worker.on('error', (err) => logger.error({ err: err.message }, '[Worker] error'));
   worker.on('ready', () => logger.info('[Worker] ready'));
+
+  // Background job to generate pending contacts for campaigns (handles large contact lists)
+  new Worker<GeneratePendingContactsData>(
+    GENERATE_QUEUE_NAME,
+    async (job) => {
+      const { campaignId, userId } = job.data;
+      const camp = await db('campaigns').where({ id: campaignId, userId }).first();
+      if (!camp) {
+        logger.warn({ campaignId }, '[Worker] Campaign not found for pending contacts generation');
+        return;
+      }
+
+      const groupContacts = await db('contacts')
+        .join('group_contacts', 'contacts.id', 'group_contacts.contactId')
+        .where('group_contacts.groupId', camp.groupId)
+        .where('contacts.userId', userId)
+        .select('contacts.*');
+
+      if (groupContacts.length > 0) {
+        await db.batchInsert(
+          'campaign_pending_contacts',
+          groupContacts.map((c, idx) => ({
+            campaignId: camp.id,
+            contactId: c.id,
+            paused: false,
+            order: idx,
+          })),
+          100,
+        );
+      }
+
+      await db('campaigns').where({ id: campaignId }).update({ generatingPendingContacts: false });
+      logger.info({ campaignId, count: groupContacts.length }, '[Worker] Generated pending contacts');
+    },
+    { connection, concurrency: 4 },
+  );
 
   // Scheduler tick
   const schedulerQueue = getSchedulerQueue();

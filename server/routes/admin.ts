@@ -1,10 +1,13 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import db from '../db';
 import { requireAuth, requireAdmin } from '../auth/middleware';
-import { currentPeriod, listPlans } from '../lib/entitlements';
-import { activateSubscription } from '../billing/service';
+import { currentPeriod, listPlans, assignFreePlan } from '../lib/entitlements';
+import { activateSubscription, cancelUserSubscription } from '../billing/service';
+import { createUser, findUserByEmail } from '../auth/service';
 import { audit } from '../lib/audit';
+import { logger } from '../logger';
 
 /**
  * Platform admin API: manage tenants, plans and view aggregate health.
@@ -12,6 +15,8 @@ import { audit } from '../lib/audit';
  */
 const router = Router();
 router.use(requireAuth, requireAdmin);
+
+// ─── Stats ────────────────────────────────────────────────────────────────────
 
 router.get('/stats', async (_req, res) => {
   const period = currentPeriod();
@@ -34,8 +39,11 @@ router.get('/stats', async (_req, res) => {
   });
 });
 
+// ─── Users ────────────────────────────────────────────────────────────────────
+
 router.get('/users', async (req, res) => {
   const search = (req.query.search as string) || '';
+  const statusFilter = (req.query.status as string) || '';
   const period = currentPeriod();
   let q = db('users')
     .leftJoin('subscriptions', function () {
@@ -61,8 +69,78 @@ router.get('/users', async (req, res) => {
     .orderBy('users.createdAt', 'desc')
     .limit(200);
   if (search) q = q.where('users.email', 'like', `%${search}%`);
+  if (statusFilter) q = q.where('users.status', statusFilter);
   const rows = await q;
   res.json(rows.map((r) => ({ ...r, emailVerified: !!r.emailVerifiedAt })));
+});
+
+const createUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1).max(120).optional(),
+  password: z.string().min(8).max(256),
+  role: z.enum(['user', 'admin']).default('user'),
+  planSlug: z.string().optional(),
+});
+router.post('/users', async (req, res) => {
+  try {
+    const { email, name, password, role, planSlug } = createUserSchema.parse(req.body);
+    const user = await createUser({ email, name, password, role });
+
+    if (planSlug) {
+      const plan = await db('plans').where({ slug: planSlug }).first();
+      if (plan) {
+        await activateSubscription(user.id, plan.id, { provider: 'admin' });
+      } else {
+        await assignFreePlan(user.id);
+      }
+    } else {
+      await assignFreePlan(user.id);
+    }
+
+    await audit({ userId: req.user!.id, action: 'create', entityType: 'user', entityId: user.id, metadata: { role, planSlug } as any, ip: req.ip });
+    logger.info({ email: user.email, role }, '[Admin] User created');
+    res.status(201).json({ user });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+const updateUserSchema = z.object({
+  name: z.string().min(1).max(120).optional(),
+  email: z.string().email().optional(),
+  role: z.enum(['user', 'admin']).optional(),
+});
+router.patch('/users/:id', async (req, res) => {
+  try {
+    const { name, email, role } = updateUserSchema.parse(req.body);
+    const target = await db('users').where({ id: req.params.id }).first();
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    const updates: Record<string, any> = {};
+    if (name !== undefined) updates.name = name.trim();
+    if (role !== undefined) updates.role = role;
+    if (email !== undefined) {
+      const normalized = email.toLowerCase().trim();
+      if (normalized !== target.email) {
+        const taken = await findUserByEmail(normalized);
+        if (taken && taken.id !== req.params.id) {
+          return res.status(409).json({ error: 'E-mail já está em uso' });
+        }
+        updates.email = normalized;
+        updates.emailVerifiedAt = null;
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await db('users').where({ id: req.params.id }).update(updates);
+    }
+    await audit({ userId: req.user!.id, action: 'update', entityType: 'user', entityId: req.params.id, metadata: { fields: Object.keys(updates) } as any, ip: req.ip });
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const statusSchema = z.object({ status: z.enum(['active', 'suspended']) });
@@ -83,10 +161,10 @@ router.post('/users/:id/status', async (req, res) => {
   }
 });
 
-const planSchema = z.object({ planSlug: z.string().min(1) });
+const planAssignSchema = z.object({ planSlug: z.string().min(1) });
 router.post('/users/:id/plan', async (req, res) => {
   try {
-    const { planSlug } = planSchema.parse(req.body);
+    const { planSlug } = planAssignSchema.parse(req.body);
     const plan = await db('plans').where({ slug: planSlug }).first();
     if (!plan) return res.status(404).json({ error: 'Plano não encontrado' });
     const target = await db('users').where({ id: req.params.id }).first();
@@ -100,8 +178,70 @@ router.post('/users/:id/plan', async (req, res) => {
   }
 });
 
+router.delete('/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    if (userId === req.user!.id) {
+      return res.status(400).json({ error: 'Não é possível excluir sua própria conta por aqui' });
+    }
+    const target = await db('users').where({ id: userId }).first();
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+    if (target.role === 'admin') {
+      return res.status(400).json({ error: 'Não é possível excluir um administrador' });
+    }
+
+    await cancelUserSubscription(userId).catch(() => undefined);
+    await db('campaigns').where({ userId }).delete();
+    await db('groups').where({ userId }).delete();
+    await db('contacts').where({ userId }).delete();
+    await db('templates').where({ userId }).delete();
+    await db('api_tokens').where({ userId }).delete();
+    await db('outbound_webhooks').where({ userId }).delete();
+    await db('settings').where({ userId }).delete();
+    await db('users').where({ id: userId }).update({
+      email: `deleted-${userId}@anonymized.local`,
+      name: 'Conta excluída',
+      status: 'suspended',
+      emailVerifiedAt: null,
+    });
+
+    await audit({ userId: req.user!.id, action: 'delete', entityType: 'user', entityId: userId, metadata: { by: 'admin' } as any, ip: req.ip });
+    logger.info({ userId, adminId: req.user!.id }, '[Admin] User deleted');
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Plans ────────────────────────────────────────────────────────────────────
+
 router.get('/plans', async (_req, res) => {
   res.json(await listPlans(true));
+});
+
+const planCreateSchema = z.object({
+  name: z.string().min(1).max(100),
+  slug: z.string().min(1).max(60).regex(/^[a-z0-9-]+$/, 'Slug deve conter apenas letras minúsculas, números e hífens'),
+  priceCents: z.number().int().min(0),
+  monthlyMessageQuota: z.number().int().min(-1).default(-1),
+  maxContacts: z.number().int().min(-1).default(-1),
+  maxSessions: z.number().int().min(-1).default(-1),
+  maxCampaigns: z.number().int().min(-1).default(-1),
+  active: z.boolean().default(true),
+});
+router.post('/plans', async (req, res) => {
+  try {
+    const data = planCreateSchema.parse(req.body);
+    const existing = await db('plans').where({ slug: data.slug }).first();
+    if (existing) return res.status(409).json({ error: 'Já existe um plano com esse slug' });
+    const id = crypto.randomUUID();
+    await db('plans').insert({ id, ...data, currency: 'BRL', features: '[]', sortOrder: 99, createdAt: new Date() });
+    await audit({ userId: req.user!.id, action: 'create', entityType: 'plan', entityId: id, ip: req.ip });
+    res.status(201).json({ id });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const planUpdateSchema = z.object({
@@ -125,6 +265,78 @@ router.put('/plans/:id', async (req, res) => {
     if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── Payments ─────────────────────────────────────────────────────────────────
+
+router.get('/payments', async (req, res) => {
+  const statusFilter = (req.query.status as string) || '';
+  const userIdFilter = (req.query.userId as string) || '';
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Number(req.query.offset) || 0;
+
+  let q = db('payments')
+    .join('users', 'payments.userId', 'users.id')
+    .leftJoin('subscriptions', 'payments.subscriptionId', 'subscriptions.id')
+    .leftJoin('plans', 'subscriptions.planId', 'plans.id')
+    .select(
+      'payments.id',
+      'payments.userId',
+      'users.email as userEmail',
+      'payments.provider',
+      'payments.providerPaymentId',
+      'payments.amountCents',
+      'payments.currency',
+      'payments.method',
+      'payments.status',
+      'payments.paidAt',
+      'payments.createdAt',
+      'plans.name as planName',
+      'plans.slug as planSlug',
+    )
+    .orderBy('payments.createdAt', 'desc')
+    .limit(limit)
+    .offset(offset);
+
+  if (statusFilter) q = q.where('payments.status', statusFilter);
+  if (userIdFilter) q = q.where('payments.userId', userIdFilter);
+
+  const rows = await q;
+  res.json(rows);
+});
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+router.get('/audit', async (req, res) => {
+  const userIdFilter = (req.query.userId as string) || '';
+  const actionFilter = (req.query.action as string) || '';
+  const entityTypeFilter = (req.query.entityType as string) || '';
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Number(req.query.offset) || 0;
+
+  let q = db('audit_log')
+    .leftJoin('users', 'audit_log.userId', 'users.id')
+    .select(
+      'audit_log.id',
+      'audit_log.userId',
+      'users.email as userEmail',
+      'audit_log.action',
+      'audit_log.entityType',
+      'audit_log.entityId',
+      'audit_log.metadata',
+      'audit_log.ip',
+      'audit_log.createdAt',
+    )
+    .orderBy('audit_log.createdAt', 'desc')
+    .limit(limit)
+    .offset(offset);
+
+  if (userIdFilter) q = q.where('audit_log.userId', userIdFilter);
+  if (actionFilter) q = q.where('audit_log.action', actionFilter);
+  if (entityTypeFilter) q = q.where('audit_log.entityType', entityTypeFilter);
+
+  const rows = await q;
+  res.json(rows);
 });
 
 export default router;

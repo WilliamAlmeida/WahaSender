@@ -14,7 +14,7 @@ import templatesRouter from './templates';
 import apiTokensRouter from './api-tokens';
 import outboundWebhooksRouter from './outbound-webhooks';
 import contactsCsvRouter from './contacts-csv';
-import { enqueueContactsBulk, removeCampaignJobs, SendJobData } from '../queue';
+import { enqueueContactsBulk, removeCampaignJobs, SendJobData, enqueueGeneratePendingContacts } from '../queue';
 import { toWhatsappChatId } from '../lib/messaging';
 import {
   getEntitlements,
@@ -287,36 +287,49 @@ router.post('/contacts/import', async (req, res) => {
     const { contacts } = req.body || {};
     if (!Array.isArray(contacts)) return res.status(400).json({ error: 'Invalid contacts list' });
 
-    const phones = contacts
-      .map((c: any) => (c.phone || c.telefone || '').toString().replace(/\D/g, '').trim())
-      .filter(Boolean);
-    if (phones.length === 0) return res.json({ success: true, count: 0 });
+    // Deduplicate by phone within the uploaded list itself — lead exports
+    // routinely repeat numbers, and inserting the same phone twice violates the
+    // (userId, phone) unique constraint. Keep the last non-empty name seen.
+    const byPhone = new Map<string, { phone: string; name: string | null; blacklisted: boolean }>();
+    for (const c of contacts) {
+      const phone = (c?.phone || c?.telefone || '').toString().replace(/\D/g, '').trim();
+      if (!phone) continue;
+      const name = c?.name != null && String(c.name).trim() !== '' ? String(c.name).trim() : null;
+      const prev = byPhone.get(phone);
+      byPhone.set(phone, {
+        phone,
+        name: name ?? prev?.name ?? null,
+        blacklisted: !!c?.blacklisted || !!prev?.blacklisted,
+      });
+    }
+    const deduped = [...byPhone.values()];
+    if (deduped.length === 0) return res.json({ success: true, count: 0 });
 
+    const phones = deduped.map((c) => c.phone);
     const existing = await db('contacts').where({ userId }).whereIn('phone', phones);
     const existingMap = new Map<string, any>();
     existing.forEach((c) => existingMap.set(c.phone, c));
 
     // Enforce plan contact cap on the net-new contacts being added.
-    const uniqueNew = new Set(phones.filter((p) => !existingMap.has(p)));
-    const limit = await checkLimit(userId, req.user!.role, 'contacts', uniqueNew.size);
+    const uniqueNew = deduped.filter((c) => !existingMap.has(c.phone)).length;
+    const limit = await checkLimit(userId, req.user!.role, 'contacts', uniqueNew);
     if (limit) return res.status(limit.status).json({ error: limit.error });
 
     const toInsert: any[] = [];
     let added = 0;
-    for (const c of contacts) {
-      const phone = (c.phone || c.telefone || '').toString().replace(/\D/g, '').trim();
-      if (!phone) continue;
-      const ex = existingMap.get(phone);
+    for (const c of deduped) {
+      const ex = existingMap.get(c.phone);
       if (!ex) {
         toInsert.push({
           id: crypto.randomUUID(),
-          name: c.name ?? null,
-          phone,
-          blacklisted: !!c.blacklisted,
+          name: c.name,
+          phone: c.phone,
+          blacklisted: c.blacklisted,
           userId,
         });
         added++;
-      } else if (c.name !== undefined) {
+      } else if (c.name != null && c.name !== ex.name) {
+        // eslint-disable-next-line no-await-in-loop
         await db('contacts').where({ id: ex.id }).update({ name: c.name });
       }
     }
@@ -589,6 +602,15 @@ router.delete('/groups/:id', async (req, res) => {
 // =============================================================================
 // CAMPAIGNS
 // =============================================================================
+// Timestamps come back from SQLite as epoch-millisecond numbers and from
+// Postgres as Date objects. Normalize everything to an ISO string (or null) so
+// the client can always `new Date(value)` safely.
+function toIso(value: any): string | null {
+  if (value == null || value === '') return null;
+  const d = value instanceof Date ? value : new Date(typeof value === 'number' ? value : isNaN(Number(value)) ? value : Number(value));
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 function shapeCampaign(c: any, pendings: any[], logs: any[]) {
   return {
     id: c.id,
@@ -596,8 +618,8 @@ function shapeCampaign(c: any, pendings: any[], logs: any[]) {
     groupId: c.groupId,
     groupName: c.groupName,
     sessions: JSON.parse(c.sessions),
-    startTime: c.startTime,
-    endTime: c.endTime,
+    startTime: toIso(c.startTime),
+    endTime: toIso(c.endTime),
     schedules: JSON.parse(c.schedules || '[]'),
     intervalMin: c.intervalMin,
     intervalMax: c.intervalMax,
@@ -607,8 +629,9 @@ function shapeCampaign(c: any, pendings: any[], logs: any[]) {
     totalContacts: c.totalContacts,
     sent: c.sent,
     failed: c.failed,
-    createdAt: c.createdAt,
-    nextSendTime: c.nextSendTime,
+    createdAt: toIso(c.createdAt),
+    nextSendTime: toIso(c.nextSendTime),
+    generatingPendingContacts: !!c.generatingPendingContacts,
     pendingContacts: pendings.map((p: any) => ({
       _id: p.id,
       name: p.name,
@@ -752,19 +775,12 @@ router.post('/campaigns', async (req, res) => {
       createdAt: new Date(),
       nextSendTime: startTime,
       userId,
+      generatingPendingContacts: groupContacts.length > 0,
     });
 
+    // Enqueue background job to populate campaign_pending_contacts
     if (groupContacts.length > 0) {
-      await db.batchInsert(
-        'campaign_pending_contacts',
-        groupContacts.map((c, idx) => ({
-          campaignId: campId,
-          contactId: c.id,
-          paused: false,
-          order: idx,
-        })),
-        100,
-      );
+      await enqueueGeneratePendingContacts({ campaignId: campId, userId });
     }
 
     res.json({
@@ -784,7 +800,7 @@ router.post('/campaigns', async (req, res) => {
       totalContacts: groupContacts.length,
       sent: 0,
       failed: 0,
-      pendingContacts: groupContacts.map((c) => ({ _id: c.id, name: c.name, phone: c.phone })),
+      pendingContacts: [],
       logs: [],
     });
   } catch (err: any) {
@@ -828,17 +844,9 @@ router.put('/campaigns/:id', async (req, res) => {
       await db('campaign_pending_contacts').where({ campaignId: camp.id }).delete();
       await db('campaign_logs').where({ campaignId: camp.id }).delete();
       await removeCampaignJobs(camp.id);
+
       if (gc.length > 0) {
-        await db.batchInsert(
-          'campaign_pending_contacts',
-          gc.map((c, idx) => ({
-            campaignId: camp.id,
-            contactId: c.id,
-            paused: false,
-            order: idx,
-          })),
-          100,
-        );
+        upd.generatingPendingContacts = true;
       }
     }
 
@@ -848,6 +856,11 @@ router.put('/campaigns/:id', async (req, res) => {
 
     if (Object.keys(upd).length > 0) await db('campaigns').where({ id: camp.id }).update(upd);
     const updated = await db('campaigns').where({ id: camp.id }).first();
+
+    if (upd.generatingPendingContacts) {
+      await enqueueGeneratePendingContacts({ campaignId: camp.id, userId });
+    }
+
     res.json(shapeCampaign(updated, [], []));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -931,10 +944,34 @@ router.delete('/campaigns/:id', async (req, res) => {
 router.get('/queue', async (req, res) => {
   try {
     const userId = req.user!.id;
-    const rows = await db('campaign_pending_contacts')
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = 50;
+    const offset = (page - 1) * limit;
+    const campaignFilter = req.query.campaign as string;
+    const statusFilter = req.query.status as string;
+
+    let query = db('campaign_pending_contacts')
       .join('campaigns', 'campaign_pending_contacts.campaignId', 'campaigns.id')
       .leftJoin('contacts', 'campaign_pending_contacts.contactId', 'contacts.id')
-      .where('campaigns.userId', userId)
+      .where('campaigns.userId', userId);
+
+    if (campaignFilter) {
+      query = query.where('campaign_pending_contacts.campaignId', campaignFilter);
+    }
+
+    if (statusFilter) {
+      if (statusFilter === 'paused') {
+        query = query.where('campaign_pending_contacts.paused', true);
+      } else if (statusFilter === 'waiting') {
+        query = query.where('campaign_pending_contacts.paused', false);
+      }
+    }
+
+    const totalRows = await query.clone().count('* as cnt').first();
+    const total = parseInt(String(totalRows?.cnt || 0));
+    const totalPages = Math.ceil(total / limit);
+
+    const rows = await query
       .select(
         'campaign_pending_contacts.campaignId',
         'campaigns.name as campaignName',
@@ -946,18 +983,26 @@ router.get('/queue', async (req, res) => {
       )
       .orderBy('campaign_pending_contacts.campaignId')
       .orderBy('campaign_pending_contacts.order', 'asc')
-      .limit(1000);
-    res.json(
-      rows.map((q: any, idx: number) => ({
+      .offset(offset)
+      .limit(limit);
+
+    res.json({
+      items: rows.map((q: any, idx: number) => ({
         campaignId: q.campaignId,
         campaignName: q.campaignName,
         contactName: q.contactName || 'N/A',
         contactPhone: q.contactPhone || 'N/A',
-        index: idx,
+        index: idx + offset,
         isPaused: !!q.isPaused,
         campaignStatus: q.campaignStatus,
       })),
-    );
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1003,6 +1048,28 @@ router.post('/campaigns/:id/queue/:index/toggle', async (req, res) => {
       .where({ campaignId: camp.id, contactId: target.contactId })
       .update({ paused: newPaused });
     res.json({ success: true, paused: newPaused });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/queue/cleanup-cancelled', async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const cancelledCamps = await db('campaigns')
+      .where({ userId, status: 'Cancelled' })
+      .whereNotNull('deletedAt')
+      .select('id');
+
+    let deleted = 0;
+    for (const camp of cancelledCamps) {
+      const result = await db('campaign_pending_contacts')
+        .where({ campaignId: camp.id })
+        .delete();
+      deleted += result;
+    }
+
+    res.json({ deleted });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

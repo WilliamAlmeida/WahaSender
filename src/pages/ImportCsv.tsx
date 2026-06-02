@@ -11,7 +11,7 @@ interface PreviewRow {
 
 export default function ImportCsv() {
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<{ rows: PreviewRow[]; total: number; invalid: number } | null>(
+  const [preview, setPreview] = useState<{ sample: PreviewRow[]; total: number; invalid: number } | null>(
     null,
   );
   const [committing, setCommitting] = useState(false);
@@ -43,16 +43,17 @@ export default function ImportCsv() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">Importar contatos CSV</h1>
+      <h1 className="text-2xl font-bold">Importar contatos</h1>
       <p className="text-sm text-slate-600">
-        Cabeçalhos aceitos: <code>name</code>/<code>nome</code> e <code>phone</code>/<code>telefone</code>/
-        <code>celular</code>. Linhas com telefone inválido são descartadas.
+        Aceita <strong>.xlsx</strong> (Excel) e <strong>.csv</strong>. Colunas reconhecidas:{' '}
+        <code>name</code>/<code>nome</code> e <code>phone</code>/<code>telefone</code>/
+        <code>celular</code>/<code>fone</code>. Linhas com telefone inválido são descartadas.
       </p>
 
       <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
         <input
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onChange={(e) => {
             setFile(e.target.files?.[0] || null);
             setPreview(null);
@@ -90,7 +91,7 @@ export default function ImportCsv() {
                 </tr>
               </thead>
               <tbody>
-                {preview.rows.map((r, i) => (
+                {preview.sample.map((r, i) => (
                   <tr key={i} className="border-t">
                     <td className="px-3 py-2">{r.name || '—'}</td>
                     <td className="px-3 py-2 font-mono">{r.phone}</td>

@@ -301,6 +301,11 @@ export async function runMigrations(): Promise<void> {
     t.timestamp('scheduledAt').nullable();
   });
 
+  // Background queue generation for large campaigns
+  await ensureColumn('campaigns', 'generatingPendingContacts', (t) => {
+    t.boolean('generatingPendingContacts').defaultTo(false);
+  });
+
   if (!(await db.schema.hasTable('audit_log'))) {
     await db.schema.createTable('audit_log', (table) => {
       table.increments('id').primary();
@@ -510,6 +515,52 @@ export async function runMigrations(): Promise<void> {
       },
     ]);
     logger.info('[Migrations] Seeded default plan catalog (free/starter/pro/business)');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-tenant contact uniqueness: the `contacts` table was created with a
+  // GLOBAL unique constraint on `phone` (pre-auth, single tenant). After adding
+  // `userId`, the same phone legitimately belongs to different users, and a lead
+  // list commonly repeats numbers — both cases threw a 500 on import. Replace the
+  // global unique with a composite unique on (userId, phone). Idempotent.
+  // ---------------------------------------------------------------------------
+  const hasCompositeContactUnique = async (): Promise<boolean> => {
+    try {
+      if (isSqliteDb) {
+        const rows: any[] = await db.raw(`PRAGMA index_list('contacts')`);
+        const list = Array.isArray(rows) ? rows : rows?.[0] || [];
+        for (const idx of list) {
+          if (!idx?.unique) continue;
+          const info: any[] = await db.raw(`PRAGMA index_info('${idx.name}')`);
+          const cols = (Array.isArray(info) ? info : info?.[0] || []).map((c: any) => c.name);
+          if (cols.includes('userId') && cols.includes('phone')) return true;
+        }
+        return false;
+      }
+      const res: any = await db.raw(
+        `SELECT 1 FROM pg_indexes WHERE tablename = 'contacts' AND indexname = 'contacts_userId_phone_unique' LIMIT 1`,
+      );
+      return (res?.rows?.length || 0) > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!(await hasCompositeContactUnique())) {
+    try {
+      // Drop the legacy global unique on `phone` if present.
+      await db.schema.alterTable('contacts', (t) => t.dropUnique(['phone'], 'contacts_phone_unique'));
+    } catch (err: any) {
+      logger.warn({ err: String(err?.message || err) }, '[Migrations] Could not drop legacy contacts.phone unique (may not exist)');
+    }
+    try {
+      await db.schema.alterTable('contacts', (t) =>
+        t.unique(['userId', 'phone'], { indexName: 'contacts_userId_phone_unique' }),
+      );
+      logger.info('[Migrations] Replaced contacts.phone global unique with composite (userId, phone)');
+    } catch (err: any) {
+      logger.warn({ err: String(err?.message || err) }, '[Migrations] Could not add composite unique on contacts (userId, phone)');
+    }
   }
 
   logger.info('[Migrations] Migrations complete');

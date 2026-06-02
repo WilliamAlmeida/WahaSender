@@ -3,14 +3,14 @@ import multer from 'multer';
 import crypto from 'crypto';
 import { z } from 'zod';
 import db from '../db';
-import { parseContactsCsv } from '../lib/csv';
+import { parseContactsFile } from '../lib/csv';
 import { audit } from '../lib/audit';
 
 const router = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
 });
 
 const previewQuery = z.object({
@@ -23,8 +23,8 @@ router.post('/preview', upload.single('file'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const opts = previewQuery.parse(req.query);
-    const result = parseContactsCsv(
-      req.file.buffer.toString('utf-8'),
+    const result = parseContactsFile(
+      req.file.buffer,
       { phone: opts.phoneCol, name: opts.nameCol },
       { delimiter: opts.delimiter },
     );
@@ -43,8 +43,8 @@ router.post('/commit', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const opts = previewQuery.parse(req.query);
     const userId = req.user!.id;
-    const { rows } = parseContactsCsv(
-      req.file.buffer.toString('utf-8'),
+    const { rows } = parseContactsFile(
+      req.file.buffer,
       { phone: opts.phoneCol, name: opts.nameCol },
       { delimiter: opts.delimiter },
     );

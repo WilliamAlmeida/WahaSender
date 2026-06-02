@@ -20,6 +20,7 @@ import { sendVerificationEmail, sendPasswordResetEmail } from '../lib/mailer';
 import { assignFreePlan } from '../lib/entitlements';
 import { audit } from '../lib/audit';
 import { logger } from '../logger';
+import { db } from '../db';
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const RESET_TTL_MS = 60 * 60 * 1000; // 1h
@@ -230,6 +231,37 @@ router.post('/logout', requireAuth, async (req, res) => {
 
 router.get('/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
+});
+
+const profileSchema = z.object({
+  name: z.string().min(1).max(120).optional(),
+  email: z.string().email().optional(),
+});
+router.patch('/profile', requireAuth, async (req, res) => {
+  try {
+    const { name, email } = profileSchema.parse(req.body);
+    const updates: Record<string, any> = {};
+    if (name !== undefined) updates.name = name.trim();
+    if (email !== undefined) {
+      const normalized = email.toLowerCase().trim();
+      if (normalized !== req.user!.email) {
+        const taken = await findUserByEmail(normalized);
+        if (taken && taken.id !== req.user!.id) {
+          return res.status(409).json({ error: 'E-mail já está em uso' });
+        }
+        updates.email = normalized;
+        updates.emailVerifiedAt = null;
+      }
+    }
+    if (Object.keys(updates).length === 0) return res.json({ user: req.user });
+    await db('users').where({ id: req.user!.id }).update(updates);
+    const updated = await findUserById(req.user!.id);
+    await audit({ userId: req.user!.id, action: 'update', entityType: 'user', entityId: req.user!.id, metadata: { fields: Object.keys(updates) } as any, ip: req.ip });
+    res.json({ user: updated });
+  } catch (err: any) {
+    if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(400).json({ error: err.message });
+  }
 });
 
 const changePasswordSchema = z.object({

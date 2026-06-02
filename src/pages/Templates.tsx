@@ -6,7 +6,7 @@ import { listTemplates, createTemplate, updateTemplate, deleteTemplate } from '.
 interface Template {
   id: string;
   name: string;
-  content: string;
+  body: string;
   variables?: string[];
   createdAt?: string;
 }
@@ -36,10 +36,10 @@ export default function Templates() {
     if (!name.trim() || !content.trim()) return;
     try {
       if (editing) {
-        await updateTemplate(editing.id, { name, content });
+        await updateTemplate(editing.id, { name, body: content });
         toast.success('Template atualizado');
       } else {
-        await createTemplate({ name, content });
+        await createTemplate({ name, body: content });
         toast.success('Template criado');
       }
       setName('');
@@ -61,7 +61,7 @@ export default function Templates() {
   function startEdit(t: Template) {
     setEditing(t);
     setName(t.name);
-    setContent(t.content);
+    setContent(t.body);
   }
 
   return (
@@ -114,7 +114,7 @@ export default function Templates() {
           <div key={t.id} className="p-4 flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
               <div className="font-semibold">{t.name}</div>
-              <div className="text-xs text-slate-500 mt-1 whitespace-pre-wrap font-mono">{t.content}</div>
+              <div className="text-xs text-slate-500 mt-1 whitespace-pre-wrap font-mono">{t.body}</div>
             </div>
             <div className="flex gap-2 shrink-0">
               <button

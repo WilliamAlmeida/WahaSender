@@ -4,6 +4,7 @@ import { logger } from '../logger';
 
 export const QUEUE_NAME = 'campaign-messages';
 export const SCHEDULER_QUEUE_NAME = 'campaign-scheduler';
+export const GENERATE_QUEUE_NAME = 'generate-pending-contacts';
 
 export interface SendJobData {
   campaignId: string;
@@ -13,6 +14,7 @@ export interface SendJobData {
 
 let queueInstance: Queue | null = null;
 let schedulerQueue: Queue | null = null;
+let generateQueue: Queue | null = null;
 
 export function getCampaignQueue(): Queue {
   if (queueInstance) return queueInstance;
@@ -32,6 +34,12 @@ export function getSchedulerQueue(): Queue {
   if (schedulerQueue) return schedulerQueue;
   schedulerQueue = new Queue(SCHEDULER_QUEUE_NAME, { connection: getConnectionOptions() });
   return schedulerQueue;
+}
+
+export function getGenerateQueue(): Queue {
+  if (generateQueue) return generateQueue;
+  generateQueue = new Queue(GENERATE_QUEUE_NAME, { connection: getConnectionOptions() });
+  return generateQueue;
 }
 
 export function jobIdFor(campaignId: string, contactId: string): string {
@@ -65,7 +73,7 @@ export async function enqueueContactsBulk(
 
 export async function removeCampaignJobs(campaignId: string): Promise<number> {
   const q = getCampaignQueue();
-  const jobs = await q.getJobs(['waiting', 'delayed', 'paused', 'wait']);
+  const jobs = await q.getJobs(['active', 'wait', 'delayed', 'paused', 'repeat']);
   let removed = 0;
   for (const j of jobs) {
     if ((j as any)?.data?.campaignId === campaignId) {
@@ -75,4 +83,18 @@ export async function removeCampaignJobs(campaignId: string): Promise<number> {
   }
   logger.debug({ campaignId, removed }, '[Queue] Removed jobs for campaign');
   return removed;
+}
+
+export interface GeneratePendingContactsData {
+  campaignId: string;
+  userId: string;
+}
+
+export async function enqueueGeneratePendingContacts(
+  data: GeneratePendingContactsData,
+): Promise<void> {
+  const q = getGenerateQueue();
+  await q.add('generate', data, {
+    jobId: `gen-pending-${data.campaignId}`,
+  });
 }
