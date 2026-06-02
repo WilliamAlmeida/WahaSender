@@ -1,12 +1,14 @@
 SHELL := /bin/bash
 
 ROOT_DIR := $(shell pwd)
+PM2_ECOSYSTEM := $(ROOT_DIR)/ecosystem.config.cjs
 PM2_WEB_NAME := wahasender-web
 PM2_WORKER_NAME := wahasender-worker
 
 NODE_MAJOR ?= 20
 NPM ?= npm
 DOCKER_COMPOSE ?= docker compose
+LOG_DIR ?= $(ROOT_DIR)/storage/logs
 
 .PHONY: help setup-vps install-node install-pm2 install-deps clean build lint test typecheck format format-check dev-web dev-worker start-web start-worker docker-up docker-down docker-logs pm2-start-web pm2-start-worker pm2-start-all pm2-stop-all pm2-delete-all pm2-restart-all pm2-status pm2-logs pm2-save pm2-startup deploy-web deploy-worker deploy-all bootstrap
 
@@ -29,6 +31,7 @@ help:
 	@echo "  make pm2-start-web  -> Sobe web no PM2"
 	@echo "  make pm2-start-worker -> Sobe worker no PM2"
 	@echo "  make pm2-start-all  -> Sobe web + worker no PM2"
+	@echo "  make pm2-restart-all -> Reinicia web + worker no PM2"
 	@echo "  make deploy-web     -> Build + restart do web no PM2"
 	@echo "  make deploy-worker  -> Build + restart do worker no PM2"
 	@echo "  make deploy-all     -> Build + restart web e worker no PM2"
@@ -114,13 +117,15 @@ docker-logs:
 
 pm2-start-web:
 	@if [ ! -f "$(ROOT_DIR)/dist/server.cjs" ]; then $(MAKE) build; fi
+	@mkdir -p "$(LOG_DIR)"
 	@pm2 delete $(PM2_WEB_NAME) >/dev/null 2>&1 || true
-	@pm2 start npm --name "$(PM2_WEB_NAME)" -- start
+	@pm2 start "$(PM2_ECOSYSTEM)" --only "$(PM2_WEB_NAME)"
 
 pm2-start-worker:
 	@if [ ! -f "$(ROOT_DIR)/dist/worker.cjs" ]; then $(MAKE) build; fi
+	@mkdir -p "$(LOG_DIR)"
 	@pm2 delete $(PM2_WORKER_NAME) >/dev/null 2>&1 || true
-	@pm2 start npm --name "$(PM2_WORKER_NAME)" -- run start:worker
+	@pm2 start "$(PM2_ECOSYSTEM)" --only "$(PM2_WORKER_NAME)"
 
 pm2-start-all: pm2-start-web pm2-start-worker
 	@echo "Todos os processos foram iniciados no PM2."

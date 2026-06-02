@@ -2,7 +2,7 @@ import db from '../db';
 import { logger } from '../logger';
 
 export type AuditAction =
-  | 'create' | 'update' | 'delete' | 'restore'
+  | 'create' | 'update' | 'delete' | 'delete-all' | 'restore'
   | 'login' | 'logout' | 'register' | 'password-change'
   | 'campaign.start' | 'campaign.pause' | 'campaign.resume'
   | 'token.create' | 'token.revoke';

@@ -162,6 +162,11 @@ npm start            # web
 npm run start:worker # worker
 ```
 
+Logs em arquivo:
+
+- Logs da aplicação (Pino): `storage/logs/web.log` e `storage/logs/worker.log`.
+- Logs de processo no PM2 (stdout/stderr): `storage/logs/wahasender-web.out.log`, `storage/logs/wahasender-web.error.log`, `storage/logs/wahasender-worker.out.log` e `storage/logs/wahasender-worker.error.log`.
+
 ## Variáveis de ambiente
 
 Veja `.env.example` para a lista completa. As mais importantes:
@@ -184,6 +189,9 @@ Veja `.env.example` para a lista completa. As mais importantes:
 | `PASSWORD_MIN_LENGTH`| Tamanho mínimo da senha                                   | `10`                    |
 | `PASSWORD_REQUIRE_COMPLEXITY` | Exige maiúscula/minúscula/dígito/símbolo          | `true`                  |
 | `CIRCUIT_BREAKER_*`  | Threshold / window / cooldown por sessão WAHA             | 5 / 300 s / 900 s       |
+| `LOG_LEVEL`          | Nível de log (`debug`, `info`, `warn`, `error`)           | `debug` (dev) / `info` (prod) |
+| `LOG_TO_FILE`        | Salva logs também em arquivo local                         | `true`                  |
+| `LOG_DIR`            | Diretório dos arquivos de log                              | `storage/logs`          |
 | `METRICS_ENABLED`    | Expor `/api/metrics` (Prometheus, somente admin)          | `true`                  |
 | `BULL_BOARD_ENABLED` | UI da fila em `/admin/queues` (somente admin)             | `true`                  |
 | `DB_FILE`            | Caminho do sqlite (só quando `DB_CLIENT=sqlite3`)         | `./storage/database.sqlite` |
