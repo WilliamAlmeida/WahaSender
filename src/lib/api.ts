@@ -181,3 +181,39 @@ export const commitCsv = async (file: File, mapping?: Record<string, string>) =>
 
 export const changePassword = async (oldPassword: string, newPassword: string) =>
   (await api.post('/auth/change-password', { oldPassword, newPassword })).data;
+
+// === Auth self-service ===
+export const forgotPassword = async (email: string) =>
+  (await api.post('/auth/forgot-password', { email })).data;
+export const resetPassword = async (token: string, newPassword: string) =>
+  (await api.post('/auth/reset-password', { token, newPassword })).data;
+export const verifyEmail = async (token: string) =>
+  (await api.post('/auth/verify-email', { token })).data;
+export const resendVerification = async () =>
+  (await api.post('/auth/resend-verification')).data;
+
+// === Billing ===
+export const getPublicPlans = async () => (await api.get('/public/plans')).data;
+export const getPlans = async () => (await api.get('/billing/plans')).data;
+export const getSubscription = async () => (await api.get('/billing/subscription')).data;
+export const getUsage = async () => (await api.get('/billing/usage')).data;
+export const getInvoices = async () => (await api.get('/billing/invoices')).data;
+export const startCheckout = async (planSlug: string) =>
+  (await api.post('/billing/checkout', { planSlug })).data as { checkoutUrl: string; mock: boolean };
+export const cancelSubscription = async () => (await api.post('/billing/cancel')).data;
+
+// === Account / LGPD ===
+export const exportAccountData = async () => (await api.get('/account/export')).data;
+export const deleteAccount = async () => (await api.post('/account/delete', { confirm: 'EXCLUIR' })).data;
+
+// === Platform admin ===
+export const adminStats = async () => (await api.get('/admin/stats')).data;
+export const adminListUsers = async (search = '') =>
+  (await api.get('/admin/users', { params: search ? { search } : {} })).data;
+export const adminSetUserStatus = async (id: string, status: 'active' | 'suspended') =>
+  (await api.post(`/admin/users/${id}/status`, { status })).data;
+export const adminSetUserPlan = async (id: string, planSlug: string) =>
+  (await api.post(`/admin/users/${id}/plan`, { planSlug })).data;
+export const adminListPlans = async () => (await api.get('/admin/plans')).data;
+export const adminUpdatePlan = async (id: string, patch: any) =>
+  (await api.put(`/admin/plans/${id}`, patch)).data;

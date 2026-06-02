@@ -14,12 +14,21 @@ import {
   Key,
   Webhook,
   Upload,
+  CreditCard,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { useState, ReactNode, lazy, Suspense } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './lib/auth';
+import { resendVerification } from './lib/api';
+import toast from 'react-hot-toast';
 import Login from './pages/Login';
+import Register from './pages/Register';
+import Landing from './pages/Landing';
+import EsqueciSenha from './pages/EsqueciSenha';
+import RedefinirSenha from './pages/RedefinirSenha';
+import VerificarEmail from './pages/VerificarEmail';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -34,6 +43,24 @@ const Templates = lazy(() => import('./pages/Templates'));
 const ApiTokens = lazy(() => import('./pages/ApiTokens'));
 const OutboundWebhooks = lazy(() => import('./pages/OutboundWebhooks'));
 const ImportCsv = lazy(() => import('./pages/ImportCsv'));
+const Billing = lazy(() => import('./pages/Billing'));
+const Admin = lazy(() => import('./pages/Admin'));
+
+function VerifyBanner() {
+  const { user, refresh } = useAuth();
+  if (!user || user.emailVerified !== false) return null;
+  const onResend = async () => {
+    await resendVerification();
+    toast.success('E-mail de verificação reenviado');
+    await refresh();
+  };
+  return (
+    <div className="flex items-center gap-3 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+      <span>Confirme seu e-mail para garantir acesso completo.</span>
+      <button onClick={onResend} className="font-semibold underline">Reenviar</button>
+    </div>
+  );
+}
 
 function Layout({ children }: { children: ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -50,16 +77,15 @@ function Layout({ children }: { children: ReactNode }) {
     { to: '/queue', icon: Clock, label: 'Fila de Disparos' },
     { to: '/api-tokens', icon: Key, label: 'API Tokens' },
     { to: '/webhooks', icon: Webhook, label: 'Webhooks Outbound' },
+    { to: '/billing', icon: CreditCard, label: 'Plano e Cobrança' },
+    ...(user?.role === 'admin' ? [{ to: '/admin', icon: ShieldCheck, label: 'Administração' }] : []),
     { to: '/settings', icon: SettingsIcon, label: 'Configurações' },
   ];
 
   return (
     <div className="flex h-screen w-full bg-slate-50 font-sans overflow-hidden text-slate-900">
       {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 bg-slate-900/50 z-20 md:hidden"
-          onClick={() => setMobileMenuOpen(false)}
-        />
+        <div className="fixed inset-0 bg-slate-900/50 z-20 md:hidden" onClick={() => setMobileMenuOpen(false)} />
       )}
 
       <aside
@@ -113,7 +139,7 @@ function Layout({ children }: { children: ReactNode }) {
             Sair
           </button>
           <div className="pt-2 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
-            v2.1.0
+            v3.0.0
           </div>
         </div>
       </aside>
@@ -124,6 +150,7 @@ function Layout({ children }: { children: ReactNode }) {
           </button>
           <div className="ml-auto w-8 h-8 bg-indigo-600 rounded flex items-center justify-center text-white font-bold text-xl italic">W</div>
         </header>
+        <VerifyBanner />
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
           <Suspense fallback={<div className="text-sm text-slate-500">Carregando...</div>}>
             {children}
@@ -135,22 +162,41 @@ function Layout({ children }: { children: ReactNode }) {
 }
 
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, loading, needsBootstrap } = useAuth();
+  const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) {
     return <div className="flex h-screen items-center justify-center text-sm text-slate-500">Carregando...</div>;
   }
-  if (needsBootstrap || !user) {
+  if (!user) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
   return <Layout>{children}</Layout>;
+}
+
+function RootRoute() {
+  const { user, loading } = useAuth();
+  if (loading) {
+    return <div className="flex h-screen items-center justify-center text-sm text-slate-500">Carregando...</div>;
+  }
+  if (!user) return <Landing />;
+  return (
+    <Layout>
+      <Suspense fallback={<div className="text-sm text-slate-500">Carregando...</div>}>
+        <Dashboard />
+      </Suspense>
+    </Layout>
+  );
 }
 
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
+      <Route path="/cadastro" element={<Register />} />
+      <Route path="/esqueci-senha" element={<EsqueciSenha />} />
+      <Route path="/redefinir-senha" element={<RedefinirSenha />} />
+      <Route path="/verificar-email" element={<VerificarEmail />} />
+      <Route path="/" element={<RootRoute />} />
       <Route path="/sessions" element={<RequireAuth><Sessions /></RequireAuth>} />
       <Route path="/contacts" element={<RequireAuth><GlobalContacts /></RequireAuth>} />
       <Route path="/contacts/import" element={<RequireAuth><ImportCsv /></RequireAuth>} />
@@ -162,6 +208,8 @@ function AppRoutes() {
       <Route path="/queue" element={<RequireAuth><Queue /></RequireAuth>} />
       <Route path="/api-tokens" element={<RequireAuth><ApiTokens /></RequireAuth>} />
       <Route path="/webhooks" element={<RequireAuth><OutboundWebhooks /></RequireAuth>} />
+      <Route path="/billing" element={<RequireAuth><Billing /></RequireAuth>} />
+      <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
       <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
     </Routes>
   );

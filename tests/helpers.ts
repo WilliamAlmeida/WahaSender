@@ -47,7 +47,13 @@ export async function resetDb() {
     'templates',
     'audit_log',
     'settings',
+    'payments',
+    'billing_events',
+    'usage_counters',
+    'subscriptions',
+    'email_tokens',
     'users',
+    // Note: `plans` is intentionally preserved (seeded once by migrations).
   ];
   for (const t of tables) {
     try {
