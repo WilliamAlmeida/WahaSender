@@ -5,7 +5,8 @@ export type AuditAction =
   | 'create' | 'update' | 'delete' | 'delete-all' | 'restore'
   | 'login' | 'logout' | 'register' | 'password-change'
   | 'campaign.start' | 'campaign.pause' | 'campaign.resume'
-  | 'token.create' | 'token.revoke';
+  | 'token.create' | 'token.revoke'
+  | 'impersonate' | 'impersonate-stop';
 
 export interface AuditEntry {
   userId: string | null;

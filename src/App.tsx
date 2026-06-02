@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, NavLink, Navigate, useLocation, useMatch } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, NavLink, Navigate, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
   Home,
   Users,
@@ -135,6 +135,27 @@ function VerifyBanner() {
     <div className="flex items-center gap-3 bg-amber-50 px-4 py-2 text-sm text-amber-800">
       <span>Confirme seu e-mail para garantir acesso completo.</span>
       <button onClick={onResend} className="font-semibold underline">Reenviar</button>
+    </div>
+  );
+}
+
+function ImpersonationBanner() {
+  const { user, impersonating, stopImpersonate } = useAuth();
+  const navigate = useNavigate();
+  if (!impersonating) return null;
+  const onExit = async () => {
+    await stopImpersonate();
+    toast.success('Impersonação encerrada');
+    navigate('/admin');
+  };
+  return (
+    <div className="flex items-center gap-3 bg-indigo-600 px-4 py-2 text-sm text-white">
+      <span>
+        Você está impersonando <strong>{user?.email}</strong>.
+      </span>
+      <button onClick={onExit} className="ml-auto font-semibold underline">
+        Voltar à minha conta
+      </button>
     </div>
   );
 }
@@ -294,6 +315,7 @@ function Layout({ children }: { children: ReactNode }) {
           </button>
           <div className="ml-auto w-8 h-8 bg-indigo-600 rounded flex items-center justify-center text-white font-bold text-xl italic">W</div>
         </header>
+        <ImpersonationBanner />
         <VerifyBanner />
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
           <Suspense fallback={<div className="text-sm text-slate-500">Carregando...</div>}>

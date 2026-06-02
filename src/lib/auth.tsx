@@ -14,9 +14,11 @@ interface AuthState {
   user: AuthUser | null;
   loading: boolean;
   needsBootstrap: boolean;
+  impersonating: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   signup: (email: string, password: string, name?: string) => Promise<void>;
+  stopImpersonate: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -26,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
+  const [impersonating, setImpersonating] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -34,8 +37,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNeedsBootstrap(!!bs.needsBootstrap);
       const { data } = await api.get('/auth/me');
       setUser(data.user);
+      setImpersonating(!!data.impersonating);
     } catch {
       setUser(null);
+      setImpersonating(false);
     } finally {
       setLoading(false);
     }
@@ -67,8 +72,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setNeedsBootstrap(false);
   }, []);
 
+  const stopImpersonate = useCallback(async () => {
+    await api.post('/auth/stop-impersonate');
+    await refresh();
+  }, [refresh]);
+
   return (
-    <AuthContext.Provider value={{ user, loading, needsBootstrap, login, logout, signup, refresh }}>
+    <AuthContext.Provider value={{ user, loading, needsBootstrap, impersonating, login, logout, signup, stopImpersonate, refresh }}>
       {children}
     </AuthContext.Provider>
   );

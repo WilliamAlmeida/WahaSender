@@ -18,6 +18,7 @@ export interface JwtPayload {
   sub: string;
   email: string;
   jti: string;
+  act?: string; // impersonator (admin) id, present only on impersonation sessions
   exp?: number;
   iat?: number;
 }
@@ -128,9 +129,14 @@ export async function markEmailVerified(userId: string): Promise<void> {
   await db('users').where({ id: userId }).update({ emailVerifiedAt: new Date() });
 }
 
-export function signToken(user: AuthUser): { token: string; jti: string; expiresInSec: number } {
+export function signToken(
+  user: AuthUser,
+  opts?: { act?: string },
+): { token: string; jti: string; expiresInSec: number } {
   const jti = crypto.randomUUID();
-  const token = jwt.sign({ sub: user.id, email: user.email, jti }, config.JWT_SECRET, {
+  const payload: Record<string, unknown> = { sub: user.id, email: user.email, jti };
+  if (opts?.act) payload.act = opts.act;
+  const token = jwt.sign(payload, config.JWT_SECRET, {
     expiresIn: config.JWT_EXPIRES_IN as any,
   });
   const decoded = jwt.decode(token) as JwtPayload | null;

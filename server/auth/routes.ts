@@ -230,7 +230,29 @@ router.post('/logout', requireAuth, async (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: req.user });
+  res.json({ user: req.user, impersonating: !!req.impersonatorId });
+});
+
+// Ends an impersonation session: reissues the admin's own token from the `act`
+// claim carried by the impersonation token (exposed as req.impersonatorId).
+router.post('/stop-impersonate', requireAuth, async (req, res) => {
+  if (!req.impersonatorId) {
+    return res.status(400).json({ error: 'Não está em modo de impersonação' });
+  }
+  const admin = await findUserById(req.impersonatorId);
+  if (!admin) return res.status(401).json({ error: 'Admin de origem não encontrado' });
+  const targetId = req.user!.id;
+  const { token } = signToken(admin);
+  res.cookie(config.COOKIE_NAME, token, cookieOptions());
+  await audit({
+    userId: admin.id,
+    action: 'impersonate-stop',
+    entityType: 'user',
+    entityId: targetId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') || null,
+  });
+  res.json({ user: admin });
 });
 
 const profileSchema = z.object({

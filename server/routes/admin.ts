@@ -2,10 +2,11 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import db from '../db';
-import { requireAuth, requireAdmin } from '../auth/middleware';
+import { requireAuth, requireAdmin, cookieOptions } from '../auth/middleware';
 import { currentPeriod, listPlans, assignFreePlan } from '../lib/entitlements';
 import { activateSubscription, cancelUserSubscription } from '../billing/service';
-import { createUser, findUserByEmail } from '../auth/service';
+import { createUser, findUserByEmail, findUserById, signToken } from '../auth/service';
+import { config } from '../config';
 import { audit } from '../lib/audit';
 import { logger } from '../logger';
 
@@ -174,6 +175,37 @@ router.post('/users/:id/plan', async (req, res) => {
     res.json({ ok: true });
   } catch (err: any) {
     if (err?.issues) return res.status(400).json({ error: err.issues[0].message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Impersonation: issue a session cookie for the target user, tagged with the
+// admin's id (`act`) so the session can be reverted via /auth/stop-impersonate.
+router.post('/users/:id/impersonate', async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    if (targetId === req.user!.id) {
+      return res.status(400).json({ error: 'Não é possível impersonar a si mesmo' });
+    }
+    const target = await findUserById(targetId);
+    if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+    if (target.status === 'suspended') {
+      return res.status(400).json({ error: 'Não é possível impersonar um usuário suspenso' });
+    }
+    const { token } = signToken(target, { act: req.user!.id });
+    res.cookie(config.COOKIE_NAME, token, cookieOptions());
+    await audit({
+      userId: req.user!.id,
+      action: 'impersonate',
+      entityType: 'user',
+      entityId: target.id,
+      metadata: { targetEmail: target.email } as any,
+      ip: req.ip,
+      userAgent: req.get('user-agent') || null,
+    });
+    logger.info({ adminId: req.user!.id, targetId }, '[Admin] Impersonation started');
+    res.json({ user: target });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });

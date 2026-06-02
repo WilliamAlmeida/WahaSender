@@ -11,6 +11,7 @@ declare module 'express-serve-static-core' {
     authMethod?: 'jwt' | 'api-token';
     jti?: string;
     tokenExp?: number;
+    impersonatorId?: string;
   }
 }
 
@@ -73,6 +74,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   req.authMethod = 'jwt';
   req.jti = decoded.jti;
   req.tokenExp = decoded.exp;
+  if (decoded.act) req.impersonatorId = decoded.act;
   next();
 }
 

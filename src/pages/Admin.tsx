@@ -8,6 +8,7 @@ import {
   adminDeleteUser,
   adminSetUserStatus,
   adminSetUserPlan,
+  adminImpersonateUser,
   adminListPlans,
   adminCreatePlan,
   adminUpdatePlan,
@@ -32,8 +33,11 @@ import {
   Clock,
   ToggleLeft,
   ToggleRight,
+  LogIn,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { useAuth } from '../lib/auth';
+import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
@@ -250,6 +254,8 @@ function DeleteUserModal({ user, onClose, onDeleted }: { user: any; onClose: () 
 }
 
 function UsersTab({ plans }: { plans: any[] }) {
+  const { user: currentUser, refresh } = useAuth();
+  const navigate = useNavigate();
   const [users, setUsers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -281,6 +287,14 @@ function UsersTab({ plans }: { plans: any[] }) {
     await adminSetUserPlan(u.id, slug);
     toast.success('Plano atualizado');
     load();
+  };
+
+  const impersonate = async (u: any) => {
+    if (!window.confirm(`Entrar como ${u.email}? Você navegará como este usuário até clicar em "Voltar à minha conta".`)) return;
+    await adminImpersonateUser(u.id);
+    await refresh();
+    toast.success(`Impersonando ${u.email}`);
+    navigate('/');
   };
 
   return (
@@ -371,6 +385,15 @@ function UsersTab({ plans }: { plans: any[] }) {
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>
+                    {u.id !== currentUser?.id && u.status !== 'suspended' && (
+                      <button
+                        onClick={() => impersonate(u)}
+                        title="Entrar como este usuário"
+                        className="p-1.5 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {u.role !== 'admin' && (
                       <>
                         <button

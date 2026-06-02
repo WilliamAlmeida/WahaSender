@@ -233,6 +233,10 @@ export const adminSetUserStatus = async (id: string, status: 'active' | 'suspend
   (await api.post(`/admin/users/${id}/status`, { status })).data;
 export const adminSetUserPlan = async (id: string, planSlug: string) =>
   (await api.post(`/admin/users/${id}/plan`, { planSlug })).data;
+export const adminImpersonateUser = async (id: string) =>
+  (await api.post(`/admin/users/${id}/impersonate`)).data;
+export const stopImpersonate = async () =>
+  (await api.post('/auth/stop-impersonate')).data;
 export const adminListPlans = async () => (await api.get('/admin/plans')).data;
 export const adminCreatePlan = async (data: any) => (await api.post('/admin/plans', data)).data;
 export const adminUpdatePlan = async (id: string, patch: any) =>
