@@ -1,23 +1,92 @@
 # WahaSender
 
-Plataforma multi-usuário para disparo humanizado de mensagens WhatsApp via [WAHA](https://waha.devlike.pro/), com fila distribuída, controle de janelas de envio, spintax e segregação total de dados por usuário.
+Plataforma **SaaS** de disparo humanizado de mensagens WhatsApp via [WAHA](https://waha.devlike.pro/) — multi-tenant, com fila distribuída, planos de quota mensal, cobrança via **Mercado Pago** e autoatendimento completo para o mercado brasileiro.
 
-> **Migração v1 → v2**: a versão antiga era monousuário com fila in-memory. A nova usa BullMQ + Redis, autenticação JWT e separação web/worker. Ao iniciar pela primeira vez, todos os dados existentes em `data.json` são migrados automaticamente para o banco e associados a um usuário legado (`legacy@local`, login desabilitado até reset de senha).
+> **v3.0**: SaaS completo — cadastro self-service, planos (Free/Starter/Pro/Business), quotas mensais com medição de uso, cobrança Mercado Pago (PreApproval + MOCK), e-mail transacional, verificação de e-mail, redefinição de senha, painel de administração de plataforma, LGPD (export + exclusão de dados), landing page pública com pricing. Veja [CHANGELOG.md](CHANGELOG.md).
 
-> **v2.1**: hardening de segurança (política de senha, JWT `jti` blocklist, HMAC no webhook), multi-sessão WAHA com circuit breaker, soft-delete + audit log, templates, API tokens (`Authorization: ApiKey ...`), webhooks outbound assinados, importação CSV, observabilidade (`/api/metrics` Prometheus + Bull Board em `/admin/queues`). Veja [CHANGELOG.md](CHANGELOG.md).
+> **v2.1**: hardening de segurança (política de senha, JWT `jti` blocklist, HMAC no webhook), multi-sessão WAHA com circuit breaker, soft-delete + audit log, templates, API tokens, webhooks outbound assinados, importação CSV, observabilidade.
 
 ## Sumário
 
+- [Planos e Quotas](#planos-e-quotas)
+- [Cobrança (Mercado Pago)](#cobrança-mercado-pago)
+- [E-mail transacional](#e-mail-transacional)
+- [LGPD](#lgpd-portabilidade-e-exclusão-de-dados)
 - [Arquitetura](#arquitetura)
 - [Stack](#stack)
 - [Início rápido (Docker)](#início-rápido-docker)
 - [Início rápido (local)](#início-rápido-local)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
-- [Fluxo de primeiro login](#fluxo-de-primeiro-login)
+- [Fluxo de cadastro self-service](#fluxo-de-cadastro-self-service)
 - [Webhook WAHA](#webhook-waha)
 - [Testes](#testes)
 - [Estrutura](#estrutura)
 - [Segurança](#notas-de-segurança-owasp)
+
+## Planos e Quotas
+
+| Plano    | Preço/mês | Mensagens/mês | Contatos  | Sessões | Campanhas |
+| -------- | --------- | ------------- | --------- | ------- | --------- |
+| Free     | R$ 0      | 100           | 500       | 1       | 3         |
+| Starter  | R$ 49     | 2.000         | 5.000     | 2       | 10        |
+| Pro      | R$ 99     | 10.000        | 50.000    | 5       | 50        |
+| Business | R$ 199    | 50.000        | ilimitado | ilimitado | ilimitado |
+
+- A quota de mensagens é contada por **mês calendário** e reinicia no 1º de cada mês.
+- Ao atingir a quota, campanhas são bloqueadas com HTTP 402 (`quota_exceeded`). O worker também detecta a quota esgotada e pausa a campanha automaticamente.
+- Administradores da plataforma têm acesso irrestrito.
+
+Os planos são configuráveis via `PUT /api/admin/plans/:id` sem necessidade de redeploy.
+
+## Cobrança (Mercado Pago)
+
+O sistema usa o **SDK oficial do Mercado Pago** (`mercadopago@3`):
+
+- **Cartão de crédito**: PreApproval (assinaturas recorrentes automáticas).
+- **Pix / boleto**: cobrança avulsa gerada a cada ciclo.
+- O webhook `POST /api/billing/webhook/mercadopago` processa eventos de pagamento e assinatura com **idempotência** (tabela `billing_events`, UNIQUE por `externalId`).
+
+### Modo MOCK (sem credenciais)
+
+Sem `MP_ACCESS_TOKEN`, o checkout ativa o plano localmente de imediato — ideal para desenvolvimento e testes sem conta MP.
+
+```bash
+# .env para MOCK
+# MP_ACCESS_TOKEN=   (deixe em branco ou omita)
+```
+
+### Produção / Sandbox
+
+```bash
+# Credenciais de sandbox (https://www.mercadopago.com.br/developers)
+MP_ACCESS_TOKEN=TEST-xxxx
+MP_PUBLIC_KEY=TEST-xxxx
+MP_WEBHOOK_SECRET=seu-segredo-do-webhook
+```
+
+Configure o webhook no painel MP apontando para `{APP_PUBLIC_URL}/api/billing/webhook/mercadopago`.
+
+## E-mail transacional
+
+Usado para verificação de e-mail, redefinição de senha e notificações de cobrança.
+
+Configure qualquer provedor SMTP:
+
+```bash
+MAIL_HOST=smtp.resend.com
+MAIL_PORT=465
+MAIL_SECURE=true
+MAIL_USER=resend
+MAIL_PASSWORD=re_xxxx
+MAIL_FROM="WahaSender <no-reply@seudominio.com>"
+```
+
+Sem `MAIL_HOST`, os e-mails são **logados no console** (modo dev). Nenhum e-mail real é enviado — ideal para testes locais.
+
+## LGPD: Portabilidade e Exclusão de Dados
+
+- `GET /api/account/export` — exporta todos os dados do tenant em JSON.
+- `POST /api/account/delete` — anonimiza e exclui todos os dados do tenant (requer `{ "confirm": "EXCLUIR" }`). Operação registrada em `audit_log`.
 
 ## Arquitetura
 
@@ -118,16 +187,40 @@ Veja `.env.example` para a lista completa. As mais importantes:
 | `METRICS_ENABLED`    | Expor `/api/metrics` (Prometheus, somente admin)          | `true`                  |
 | `BULL_BOARD_ENABLED` | UI da fila em `/admin/queues` (somente admin)             | `true`                  |
 | `DB_FILE`            | Caminho do sqlite (só quando `DB_CLIENT=sqlite3`)         | `./storage/database.sqlite` |
+| `APP_PUBLIC_URL`     | URL base para links em e-mails e retorno do checkout      | `http://localhost:3000` |
+| `ENABLE_SIGNUP`      | Habilita cadastro self-service público                    | `true`                  |
+| `REQUIRE_EMAIL_VERIFICATION` | Bloqueia envios até e-mail verificado           | `false`                 |
+| `MAIL_HOST`          | Host SMTP (vazio → loga no console)                       | —                       |
+| `MAIL_PORT`          | Porta SMTP                                                | `587`                   |
+| `MAIL_USER/PASSWORD` | Credenciais SMTP                                          | —                       |
+| `MAIL_FROM`          | Endereço remetente                                        | `WahaSender <no-reply@…>` |
+| `MP_ACCESS_TOKEN`    | Token de acesso Mercado Pago (vazio → MOCK mode)          | —                       |
+| `MP_PUBLIC_KEY`      | Chave pública MP (frontend checkout)                      | —                       |
+| `MP_WEBHOOK_SECRET`  | Segredo para verificação de assinatura do webhook MP      | —                       |
 
 **Docker / K8s secrets:** qualquer variável pode ser carregada de arquivo usando o sufixo `_FROM_FILE`. Ex.: `JWT_SECRET_FROM_FILE=/run/secrets/jwt_secret`.
 
-## Fluxo de primeiro login
+## Fluxo de cadastro self-service
 
 1. Sobe a aplicação (web + worker + redis + postgres).
-2. Acessa `http://localhost:3000`. O frontend chama `GET /api/auth/needs-bootstrap` — sem usuários, mostra "Criar primeiro administrador".
-3. Após criado o admin, novos cadastros públicos são bloqueados (`POST /api/auth/register` passa a retornar 403). Para criar mais usuários, insira diretamente no banco ou exponha um endpoint admin.
+2. Acessa `http://localhost:3000`. Se não houver usuários, exibe tela de criação do primeiro administrador (dono da plataforma); o admin é criado com e-mail já verificado.
+3. A partir daí, qualquer pessoa pode se cadastrar em `/cadastro` (enquanto `ENABLE_SIGNUP=true`). O novo usuário recebe o **plano Free** automaticamente e um e-mail de verificação (se configurado).
+4. Com `REQUIRE_EMAIL_VERIFICATION=true`, o envio de mensagens é bloqueado até a verificação.
 
-### Migração do usuário legado
+### Redefinição de senha
+
+Acesse `/esqueci-senha` → receba link por e-mail → `/redefinir-senha?token=...` → nova senha aplicada.
+
+### Admin de plataforma
+
+Acesse `/admin` (somente usuários com `role=admin`):
+
+- Visão de MRR, usuários ativos, mensagens enviadas no mês.
+- Listar/suspender/reativar tenants.
+- Alterar plano de qualquer tenant manualmente.
+- Configurar planos (preço, quotas, limites).
+
+### Migração do usuário legado (v1 → v2)
 
 No primeiro boot após atualizar do v1, um registro `legacy@local` é criado com `claimable=true`. O primeiro cadastro que usar este e-mail assume todos os dados legados de forma atômica. Para recuperar uma instalação sem acesso, use a CLI:
 
@@ -185,26 +278,51 @@ npm test            # roda uma vez
 npm run test:watch  # modo watch
 ```
 
-Cobertura: spintax, placeholders, normalização de telefone, janelas de envio, fluxo de autenticação (bootstrap/login/logout/JWT blocklist), isolamento multi-tenant (contatos por usuário, soft-delete, tokens de API). 18 testes no total.
+Cobertura: spintax, placeholders, normalização de telefone, janelas de envio, fluxo de autenticação (bootstrap/login/logout/JWT blocklist), isolamento multi-tenant, SaaS (signup self-service, quota enforcement, email tokens, entitlements). 24 testes no total.
 
 ## Estrutura
 
 ```
 server/
-  config.ts          # parse/validação zod do .env
-  logger.ts          # pino
-  db.ts              # knex
-  migrations.ts      # schema idempotente + backfill legado
-  storage.ts         # provider Local / S3 + validação de upload
-  auth/              # service, middleware, routes
-  routes/api.ts      # API REST (todas as rotas isoladas por req.user.id)
-  queue/             # BullMQ connection + helpers
-  lib/messaging.ts   # placeholders, spintax, JID
-  lib/schedule.ts    # janelas + delay humanizado
-src/                 # frontend React
-worker.ts            # processador BullMQ
-server.ts            # composition root da API
-tests/               # vitest
+  config.ts            # parse/validação zod do .env
+  logger.ts            # pino
+  db.ts                # knex
+  migrations.ts        # schema idempotente + seed de planos
+  storage.ts           # provider Local / S3 + validação de upload
+  auth/
+    service.ts         # createUser, login, resetPassword, markEmailVerified
+    middleware.ts      # requireAuth, requireAdmin, requireVerifiedEmail
+    routes.ts          # login, signup, verify-email, forgot/reset-password
+    email-tokens.ts    # tokens SHA256 de uso único (verify/reset)
+  billing/
+    provider.ts        # interface BillingProvider
+    mercadopago.ts     # PreApproval + MOCK mode
+    service.ts         # activateSubscription, applyWebhook, cancelSubscription
+    webhook.ts         # POST /api/billing/webhook/mercadopago
+  routes/
+    api.ts             # API REST (rotas isoladas por req.user.id + quota gates)
+    billing.ts         # /api/billing/* (plans, subscription, usage, checkout)
+    account.ts         # /api/account/export, /api/account/delete (LGPD)
+    admin.ts           # /api/admin/* (stats, users, plans)
+  lib/
+    entitlements.ts    # getEntitlements, getRemainingQuota, incrementUsage
+    mailer.ts          # nodemailer + console fallback
+    messaging.ts       # placeholders, spintax, JID
+    schedule.ts        # janelas + delay humanizado
+  queue/               # BullMQ connection + helpers
+src/                   # frontend React
+  pages/
+    Landing.tsx        # landing pública com pricing
+    Login.tsx          # login
+    Register.tsx       # cadastro self-service (/cadastro)
+    EsqueciSenha.tsx   # forgot password
+    RedefinirSenha.tsx # reset password
+    VerificarEmail.tsx # e-mail verification callback
+    Billing.tsx        # plano atual, uso, faturas, upgrade/cancel
+    Admin.tsx          # painel de administração de plataforma
+worker.ts              # processador BullMQ (+ quota kill-switch + incrementUsage)
+server.ts              # composition root da API
+tests/                 # vitest (24 testes)
 ```
 
 ## Notas de segurança (OWASP)

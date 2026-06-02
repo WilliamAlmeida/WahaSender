@@ -16,11 +16,50 @@ import outboundWebhooksRouter from './outbound-webhooks';
 import contactsCsvRouter from './contacts-csv';
 import { enqueueContactsBulk, removeCampaignJobs, SendJobData } from '../queue';
 import { toWhatsappChatId } from '../lib/messaging';
+import {
+  getEntitlements,
+  getRemainingQuota,
+  countActiveContacts,
+  countActiveCampaigns,
+} from '../lib/entitlements';
 
 const router = Router();
 
 // All API routes require auth except auth/* and webhook.
 router.use(requireAuth);
+
+/**
+ * Plan-limit guard. Returns null when allowed, or an {status,error} object to
+ * send. Admins (platform owner) bypass all tenant quotas.
+ */
+async function checkLimit(
+  userId: string,
+  role: string,
+  kind: 'contacts' | 'campaigns' | 'sessions',
+  needed: number,
+): Promise<{ status: number; error: string } | null> {
+  if (role === 'admin') return null;
+  const { plan } = await getEntitlements(userId);
+  if (kind === 'contacts') {
+    if (plan.maxContacts < 0) return null;
+    const used = await countActiveContacts(userId);
+    if (used + needed > plan.maxContacts) {
+      return { status: 402, error: `Limite de ${plan.maxContacts} contatos do plano ${plan.name} atingido. Faça upgrade.` };
+    }
+  } else if (kind === 'campaigns') {
+    if (plan.maxCampaigns < 0) return null;
+    const used = await countActiveCampaigns(userId);
+    if (used + needed > plan.maxCampaigns) {
+      return { status: 402, error: `Limite de ${plan.maxCampaigns} campanhas do plano ${plan.name} atingido. Faça upgrade.` };
+    }
+  } else if (kind === 'sessions') {
+    if (plan.maxSessions < 0) return null;
+    if (needed > plan.maxSessions) {
+      return { status: 402, error: `Plano ${plan.name} permite até ${plan.maxSessions} instância(s) WAHA por campanha.` };
+    }
+  }
+  return null;
+}
 
 // Sub-routers (also under requireAuth)
 router.use('/templates', templatesRouter);
@@ -256,6 +295,11 @@ router.post('/contacts/import', async (req, res) => {
     const existing = await db('contacts').where({ userId }).whereIn('phone', phones);
     const existingMap = new Map<string, any>();
     existing.forEach((c) => existingMap.set(c.phone, c));
+
+    // Enforce plan contact cap on the net-new contacts being added.
+    const uniqueNew = new Set(phones.filter((p) => !existingMap.has(p)));
+    const limit = await checkLimit(userId, req.user!.role, 'contacts', uniqueNew.size);
+    if (limit) return res.status(limit.status).json({ error: limit.error });
 
     const toInsert: any[] = [];
     let added = 0;
@@ -674,6 +718,12 @@ router.post('/campaigns', async (req, res) => {
     const group = await db('groups').where({ id: data.groupId, userId }).first();
     if (!group) return res.status(404).json({ error: 'Group not found' });
 
+    // Plan limits: number of campaigns and WAHA sessions per campaign.
+    const campLimit = await checkLimit(userId, req.user!.role, 'campaigns', 1);
+    if (campLimit) return res.status(campLimit.status).json({ error: campLimit.error });
+    const sessLimit = await checkLimit(userId, req.user!.role, 'sessions', data.sessions.length);
+    if (sessLimit) return res.status(sessLimit.status).json({ error: sessLimit.error });
+
     const campId = crypto.randomUUID();
     const groupContacts = await db('contacts')
       .join('group_contacts', 'contacts.id', 'group_contacts.contactId')
@@ -818,6 +868,25 @@ router.post('/campaigns/:id/toggle', async (req, res) => {
     } else if (camp.status === 'Running' || camp.status === 'Scheduled') {
       newStatus = 'Paused';
     }
+
+    if (newStatus === 'Running' || newStatus === 'Scheduled') {
+      // Block (re)start when the monthly message quota cannot cover what's left.
+      const pendingCount = await db('campaign_pending_contacts')
+        .where({ campaignId: camp.id, paused: false })
+        .count({ c: '*' })
+        .first();
+      const needed = Number(pendingCount?.c || 0);
+      if (req.user!.role !== 'admin') {
+        const remaining = await getRemainingQuota(userId);
+        if (remaining < needed) {
+          return res.status(402).json({
+            error: `Sua cota mensal de mensagens é insuficiente (restam ${remaining}, a campanha precisa de ${needed}). Faça upgrade do plano.`,
+            code: 'quota_exceeded',
+          });
+        }
+      }
+    }
+
     await db('campaigns').where({ id: camp.id }).update({ status: newStatus });
 
     if (newStatus === 'Running') {

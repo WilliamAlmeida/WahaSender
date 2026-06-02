@@ -19,6 +19,7 @@ import { classifyWahaError } from './server/lib/error-classifier';
 import { isOpen, recordFailure, recordSuccess, resetCircuit } from './server/lib/circuit-breaker';
 import { pickHealthySession } from './server/lib/session-selector';
 import { dispatchOutbound } from './server/lib/outbound-webhooks';
+import { incrementUsage, getRemainingQuota } from './server/lib/entitlements';
 import { jobsTotal, jobLatency, wahaErrors } from './server/lib/metrics';
 
 async function getSettingsForUser(userId: string) {
@@ -165,6 +166,26 @@ async function processSendJob(job: Job<SendJobData>): Promise<SendOutcome> {
     return { status: 'failed', errorMessage: 'invalid-phone' };
   }
 
+  // Quota kill-switch: pause the campaign when the tenant's monthly allowance
+  // is exhausted (admins/unlimited plans return Infinity and pass through).
+  const owner = await db('users').where({ id: userId }).first();
+  if (owner?.role !== 'admin') {
+    const remaining = await getRemainingQuota(userId);
+    if (remaining <= 0) {
+      await db('campaigns').where({ id: camp.id }).update({ status: 'Paused' });
+      await db('campaign_logs').insert({
+        campaignId: camp.id,
+        contactId: contact.id,
+        log: `[${now.toISOString()}] Pausada: cota mensal de mensagens esgotada`,
+        status: 'skipped',
+      });
+      void dispatchOutbound(userId, 'campaign.paused', { campaignId: camp.id, reason: 'quota-exceeded' });
+      stop();
+      jobsTotal.inc({ outcome: 'skipped' });
+      return { status: 'skipped', skipReason: 'quota-exceeded' };
+    }
+  }
+
   const settings = await getSettingsForUser(userId);
   if (!settings?.wahaUrl) {
     stop();
@@ -193,6 +214,8 @@ async function processSendJob(job: Job<SendJobData>): Promise<SendOutcome> {
     const wahaMessageId = response.data?.id || response.data?.messageId || response.data?.key?.id;
 
     await db('campaigns').where({ id: camp.id }).increment('sent', 1);
+    // Meter tenant usage against their monthly plan quota.
+    await incrementUsage(userId, 1);
     await db('campaign_logs').insert({
       campaignId: camp.id,
       contactId: contact.id,

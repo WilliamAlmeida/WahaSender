@@ -10,6 +10,8 @@ export interface AuthUser {
   email: string;
   name: string | null;
   role: string;
+  status: string;
+  emailVerified: boolean;
 }
 
 export interface JwtPayload {
@@ -25,6 +27,8 @@ const ROW_TO_USER = (row: any): AuthUser => ({
   email: row.email,
   name: row.name,
   role: row.role || 'user',
+  status: row.status || 'active',
+  emailVerified: !!row.emailVerifiedAt,
 });
 
 export async function countUsers(): Promise<number> {
@@ -81,9 +85,10 @@ export async function createUser(input: {
     name: input.name || null,
     role: input.role || 'user',
     claimable: false,
+    status: 'active',
     createdAt: new Date(),
   });
-  return { id, email, name: input.name || null, role: input.role || 'user' };
+  return { id, email, name: input.name || null, role: input.role || 'user', status: 'active', emailVerified: false };
 }
 
 export async function verifyPassword(email: string, password: string): Promise<AuthUser | null> {
@@ -109,6 +114,18 @@ export async function changePassword(
   const passwordHash = await bcrypt.hash(newPassword, 12);
   await db('users').where({ id: userId }).update({ passwordHash });
   return true;
+}
+
+/** Sets a new password without requiring the old one (password-reset flow). */
+export async function resetPassword(userId: string, newPassword: string): Promise<void> {
+  const policy = validatePassword(newPassword);
+  if (!policy.ok) throw new Error((policy as { reason: string }).reason);
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await db('users').where({ id: userId }).update({ passwordHash });
+}
+
+export async function markEmailVerified(userId: string): Promise<void> {
+  await db('users').where({ id: userId }).update({ emailVerifiedAt: new Date() });
 }
 
 export function signToken(user: AuthUser): { token: string; jti: string; expiresInSec: number } {

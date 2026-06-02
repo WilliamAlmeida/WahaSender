@@ -5,6 +5,9 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string | null;
+  role?: string;
+  status?: string;
+  emailVerified?: boolean;
 }
 
 interface AuthState {
@@ -13,7 +16,7 @@ interface AuthState {
   needsBootstrap: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  register: (email: string, password: string, name?: string) => Promise<void>;
+  signup: (email: string, password: string, name?: string) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -29,10 +32,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data: bs } = await api.get('/auth/needs-bootstrap');
       setNeedsBootstrap(!!bs.needsBootstrap);
-      if (bs.needsBootstrap) {
-        setUser(null);
-        return;
-      }
       const { data } = await api.get('/auth/me');
       setUser(data.user);
     } catch {
@@ -62,14 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await refresh();
   }, [refresh]);
 
-  const register = useCallback(async (email: string, password: string, name?: string) => {
-    const { data } = await api.post('/auth/register', { email, password, name });
+  const signup = useCallback(async (email: string, password: string, name?: string) => {
+    const { data } = await api.post('/auth/signup', { email, password, name });
     setUser(data.user);
     setNeedsBootstrap(false);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, needsBootstrap, login, logout, register, refresh }}>
+    <AuthContext.Provider value={{ user, loading, needsBootstrap, login, logout, signup, refresh }}>
       {children}
     </AuthContext.Provider>
   );

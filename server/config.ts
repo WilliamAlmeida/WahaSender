@@ -84,6 +84,28 @@ const envSchema = z.object({
   CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().positive().default(900_000),
 
   GEMINI_API_KEY: z.string().optional(),
+
+  // --- SaaS: self-service, e-mail and billing ---
+  // Public URL used to build links in transactional e-mails (verify/reset/checkout return).
+  APP_PUBLIC_URL: z.string().url().default('http://localhost:3000'),
+  // Toggle open registration (self-service signup). Bootstrap admin works regardless.
+  ENABLE_SIGNUP: z.coerce.boolean().default(true),
+  // Require a verified e-mail before a tenant can start sending campaigns.
+  REQUIRE_EMAIL_VERIFICATION: z.coerce.boolean().default(false),
+
+  // Transactional e-mail (SMTP). When MAIL_HOST is unset, e-mails are logged to
+  // the console instead of being sent (handy for local/dev).
+  MAIL_HOST: z.string().optional(),
+  MAIL_PORT: z.coerce.number().int().positive().default(587),
+  MAIL_SECURE: z.coerce.boolean().default(false),
+  MAIL_USER: z.string().optional(),
+  MAIL_PASSWORD: z.string().optional(),
+  MAIL_FROM: z.string().default('WahaSender <no-reply@wahasender.local>'),
+
+  // Mercado Pago billing. Without MP_ACCESS_TOKEN, checkout runs in mock mode.
+  MP_ACCESS_TOKEN: z.string().optional(),
+  MP_PUBLIC_KEY: z.string().optional(),
+  MP_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
