@@ -59,7 +59,9 @@ export function getEmailQueue(): Queue {
 }
 
 export function jobIdFor(campaignId: string, contactId: string): string {
-  return `${campaignId}:${contactId}`;
+  // BullMQ (v5+) rejects custom job ids containing ":" since it's the Redis key
+  // separator. UUIDs never contain "__", so it's a safe delimiter.
+  return `${campaignId}__${contactId}`;
 }
 
 export async function enqueueContact(
